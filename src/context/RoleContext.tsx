@@ -18,6 +18,10 @@ export interface Profile {
   started_at?: string;
   expires_at?: string;
   cancelled_at?: string;
+  // Staff permissions (inherited from master lawyer)
+  master_lawyer_id?: string;
+  can_view_billing?: boolean;
+  can_manage_appointments?: boolean;
   // Manual billing credentials
   vodafone_cash_number?: string;
   instapay_address?: string;
@@ -44,7 +48,11 @@ interface RoleContextType {
   canViewCaseDetails: boolean;
   canManageBilling: boolean;
   canManageTeam: boolean;
+  canViewBilling: boolean;
+  canManageAppointments: boolean;
   isTeamLocked: boolean;
+  /* Tier-based storage limits (daily) */
+  dailyUploadLimitMB: number;
 }
 
 const RoleContext = createContext<RoleContextType | undefined>(undefined);
@@ -55,14 +63,28 @@ export function RoleProvider({ children }: { children: ReactNode }) {
 
   const tier = profile?.tier || 'free';
 
+  /* Core RBAC permissions */
   const canDeleteCase = activeRole === 'owner' || activeRole === 'partner';
   const canUploadFiles = activeRole !== 'secretary' && activeRole !== 'accountant';
   const canEditJudgment = activeRole === 'lawyer' || activeRole === 'partner' || activeRole === 'owner';
-  const canViewChat = activeRole !== 'accountant';
+  /* UNIVERSAL CHAT - Unlocked for ALL tiers */
+  const canViewChat = true;
   const canViewCaseDetails = activeRole !== 'accountant';
   const canManageBilling = activeRole === 'owner' || activeRole === 'partner' || activeRole === 'accountant';
   const canManageTeam = activeRole === 'owner' || activeRole === 'partner';
+
+  /* Inherited permissions for staff sub-accounts */
+  const canViewBilling = profile?.can_view_billing ?? (activeRole === 'owner' || activeRole === 'partner' || activeRole === 'accountant');
+  const canManageAppointments = profile?.can_manage_appointments ?? (activeRole !== 'accountant');
+
   const isTeamLocked = tier === 'free';
+
+  /* TIERED STORAGE LIMITS - Daily upload capacity */
+  const dailyUploadLimitMB = tier === 'team'
+    ? Infinity  // Unlimited
+    : tier === 'premium'
+      ? 2048     // 2 GB
+      : 50;      // 50 MB for free
 
   return (
     <RoleContext.Provider
@@ -79,7 +101,10 @@ export function RoleProvider({ children }: { children: ReactNode }) {
         canViewCaseDetails,
         canManageBilling,
         canManageTeam,
+        canViewBilling,
+        canManageAppointments,
         isTeamLocked,
+        dailyUploadLimitMB,
       }}
     >
       {children}

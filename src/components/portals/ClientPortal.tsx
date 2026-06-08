@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Scale, LogOut, Phone, Calendar, AlertTriangle, Bot, Send, MessageSquare, Users, ChevronDown, CreditCard, Lock, Wallet } from 'lucide-react';
+import { Scale, LogOut, Phone, Calendar, AlertTriangle, Bot, Send, MessageSquare, Users, ChevronDown, CreditCard, Lock, Wallet, ArrowRight, Clock, ChevronLeft } from 'lucide-react';
 import { Button, Card, Badge, Modal, Field, NotificationUI } from '../atoms';
 import { supabase, sendPushToClient } from '../../services/supabase';
 import { checkFloodLimit } from '../../services/floodProtection';
@@ -45,8 +45,8 @@ const TEAM_MEMBERS = [
   { id: 'accountant', label: 'الحسابات', icon: '🧮' },
 ];
 
-/* Days of week for appointment booking - static fallback */
-const DAYS_OF_WEEK_STATIC = [
+/* Days of week for appointment booking */
+const DAYS_OF_WEEK = [
   { id: 'saturday', label: 'السبت' },
   { id: 'sunday', label: 'الأحد' },
   { id: 'monday', label: 'الاثنين' },
@@ -63,7 +63,47 @@ const PAYMOB_CHANNELS = [
   { id: 'aman', label: 'أمان', desc: 'محفظة أمان الإلكترونية', icon: '🏦', color: '#00B4D8' },
 ];
 
+/* CSS for collapsible details */
+const detailsStyle = `
+  details {
+    background: #fff;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    overflow: hidden;
+    margin-bottom: 10px;
+  }
+  details summary {
+    padding: 12px 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--navy);
+    background: linear-gradient(135deg, #F5F8FF, #fff);
+    transition: background .15s;
+  }
+  details summary::-webkit-details-marker { display: none; }
+  details[open] summary {
+    background: #F5F8FF;
+  }
+  details .details-content {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+  }
+  details summary svg {
+    transition: transform .2s;
+  }
+  details[open] summary svg {
+    transform: rotate(180deg);
+  }
+`;
+
 export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPortalProps) {
+  /* Full-screen mobile chat routing state */
+  const [currentScreen, setCurrentScreen] = useState<'hub' | 'live_chat'>('hub');
+
   const [lawyerInfo, setLawyerInfo] = useState<any>(null);
   const [lawyerProfile, setLawyerProfile] = useState<Profile | null>(null);
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
@@ -81,9 +121,11 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
   const [activeChatTarget, setActiveChatTarget] = useState<string>('bot');
   const [activeChatLabel, setActiveChatLabel] = useState<string>('المساعد الذكي');
 
-  /* Appointment dropdown state */
+  /* Simplified appointment booking state */
   const [showApptDropdown, setShowApptDropdown] = useState(false);
   const [selectedDay, setSelectedDay] = useState<string>('');
+  const [timeFrom, setTimeFrom] = useState<string>('09:00');
+  const [timeTo, setTimeTo] = useState<string>('17:00');
   const [apptSubmitted, setApptSubmitted] = useState(false);
 
   /* Payment state - Paymob */
@@ -94,7 +136,6 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
 
   /* Lawyer availability and payment credentials */
   const [availableDays, setAvailableDays] = useState<string[]>([]);
-  const [availableSlots, setAvailableSlots] = useState<string[]>([]);
   const [lawyerPaymentInfo, setLawyerPaymentInfo] = useState<{
     vodafone_cash_number?: string;
     instapay_address?: string;
@@ -139,7 +180,6 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
           setLawyerInfo(data);
           setLawyerProfile(data as Profile);
           setEmgEnabled(data.is_emergency_enabled ?? true);
-          // Set payment credentials if available
           if (data.vodafone_cash_number || data.instapay_address || data.bank_account_details) {
             setLawyerPaymentInfo({
               vodafone_cash_number: data.vodafone_cash_number,
@@ -150,23 +190,20 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
           const lawyerName = data.full_name || 'المحامي';
           setMsgs([{
             id: 'w', from: 'bot',
-            text: `مرحباً، أنا مساعد الأستاذ ${lawyerName || 'المحامي'}. كيف أقدر أساعدك؟`,
+            text: `مرحباً، أنا مساعد الأستاذ ${lawyerName}. كيف أقدر أساعدك؟`,
             time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
           }]);
         }
       });
 
-    // Fetch lawyer availability for dynamic booking
+    // Fetch lawyer availability days
     supabase.from('lawyer_availability')
-      .select('available_days,time_slots')
+      .select('available_days')
       .eq('lawyer_id', lawyerId)
       .eq('is_active', true)
       .single()
       .then(({ data: availData }) => {
-        if (availData) {
-          setAvailableDays(availData.available_days || []);
-          setAvailableSlots(availData.time_slots || []);
-        }
+        if (availData) setAvailableDays(availData.available_days || []);
       });
 
     /* Aggregate all cases for this client by phone number */
@@ -186,7 +223,8 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [msgs]);
 
-  const botReply = async (text: string) => {
+  /* LOCAL BOT PROCESSING - No database inserts for bot inquiries */
+  const botReply = async (text: string): Promise<string> => {
     const t = text.trim();
     const num = t.match(/\b([A-Za-z]{0,5}[\-]?\d{3,})\b/i)?.[1] || t.match(/\b(\d{4,})\b/)?.[1];
     if (num) {
@@ -212,38 +250,43 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
     const { allowed } = checkFloodLimit();
     if (!allowed) { push('⚠️ إرسال سريع جداً! انتظر قليلاً', 'warning'); return; }
     const txt = input;
-    setMsgs((p) => [...p, { id: 'u' + Date.now(), from: 'user', text: txt, time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) }]);
+    const userMsgTime = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+    setMsgs((p) => [...p, { id: 'u' + Date.now(), from: 'user', text: txt, time: userMsgTime }]);
     setInput('');
 
-    if (activeChatTarget !== 'bot' && selectedCase) {
-      await supabase.from('messages').insert([{ case_id: selectedCase.id, sender_id: user.id, message_text: sanitize(txt) }]);
-      setMsgs((p) => [...p, { id: 's' + Date.now(), from: 'staff', staffName: activeChatLabel, text: 'تم إرسال رسالتك ✓', time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) }]);
+    /* LOCAL BOT MODE: Process entirely locally, no DB insert */
+    if (activeChatTarget === 'bot') {
+      const reply = await botReply(txt);
+      setTimeout(() => setMsgs((p) => [...p, { id: 'b' + Date.now(), from: 'bot', text: reply, time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) }]), 420);
       return;
     }
 
-    if (selectedCase) await supabase.from('messages').insert([{ case_id: selectedCase.id, sender_id: user.id, message_text: sanitize(txt) }]);
-    const reply = await botReply(txt);
-    setTimeout(() => setMsgs((p) => [...p, { id: 'b' + Date.now(), from: 'bot', text: reply, time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) }]), 420);
+    /* REMOTE MODE: Insert to messages table for real-time chat with lawyer/staff */
+    if (selectedCase) {
+      await supabase.from('messages').insert([{ case_id: selectedCase.id, sender_id: user.id, message_text: sanitize(txt) }]);
+      setMsgs((p) => [...p, { id: 's' + Date.now(), from: 'staff', staffName: activeChatLabel, text: 'تم إرسال رسالتك ✓', time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) }]);
+    }
   };
 
   const sendEmergency = async () => {
     const { allowed } = checkFloodLimit();
     if (!allowed) { push('⚠️ تم استخدام زر الطوارئ مرتين في دقيقة واحدة', 'warning'); return; }
     if (selectedCase && emgText.trim()) {
+      const emergencyMessage = `🆘 [طلب طوارئ عاجل]: ${sanitize(emgText)}`;
+
       const success = await triggerEmergency({
         caseId: selectedCase.id,
         createdBy: user.id,
-        essentialNeeds: sanitize(emgText),
+        essentialNeeds: emergencyMessage,
         emergencyCosts: 0,
       });
       if (success) {
         const lawyerId = urlLawyerId || profile?.linked_lawyer_id;
         if (lawyerId) sendPushToClient(lawyerId, '🆘 طلب طوارئ عاجل!', emgText);
-        // Add to local chat for immediate visibility
         setMsgs((p) => [...p, {
           id: 'emg' + Date.now(),
           from: 'user',
-          text: `🆘 ${emgText}`,
+          text: emergencyMessage,
           time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
           isEmergency: true,
         }]);
@@ -252,20 +295,44 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
     setEmgSent(true); setShowEmg(false);
   };
 
-  const submitAppointment = async (day: string) => {
-    if (!selectedCase || !day) { push('اختر يوم الموعد', 'warning'); return; }
-    await supabase.from('appointment_requests').insert([{
-      case_id: selectedCase.id, client_id: user.id, lawyer_id: lawyerInfo?.id,
-      appointment_date: day, appointment_time: 'غيابي', reason: `طلب موعد يوم ${DAYS_OF_WEEK.find(d => d.id === day)?.label}`,
+  /* SIMPLIFIED BOOKING ENGINE - Submit with time range */
+  const submitAppointment = async () => {
+    if (!selectedCase || !selectedDay) {
+      push('اختر يوم الموعد', 'warning');
+      return;
+    }
+    if (!timeFrom || !timeTo) {
+      push('حدد وقت البداية والنهاية', 'warning');
+      return;
+    }
+
+    const timeRange = `${timeFrom} - ${timeTo}`;
+    const dayLabel = DAYS_OF_WEEK.find(d => d.id === selectedDay)?.label || selectedDay;
+    const lawyerId = lawyerInfo?.id || urlLawyerId || profile?.linked_lawyer_id;
+
+    const { error } = await supabase.from('appointment_requests').insert([{
+      case_id: selectedCase.id,
+      client_id: user.id,
+      lawyer_id: lawyerId,
+      appointment_date: selectedDay,
+      appointment_time: timeRange,
+      reason: `طلب موعد يوم ${dayLabel} من الساعة ${timeFrom} إلى ${timeTo}`,
     }]);
+
+    if (error) {
+      push('خطأ في إرسال الطلب', 'danger');
+      return;
+    }
+
     await supabase.from('case_events').insert([{
-      case_id: selectedCase.id, event_type: 'APPOINTMENT_REQUESTED',
-      event_description: `📅 طلب حجز موعد: يوم ${DAYS_OF_WEEK.find(d => d.id === day)?.label}`,
+      case_id: selectedCase.id,
+      event_type: 'APPOINTMENT_REQUESTED',
+      event_description: `📅 طلب حجز موعد: يوم ${dayLabel} (${timeRange})`,
     }]);
+
     push('✓ تم إرسال طلب الموعد', 'success');
     setApptSubmitted(true);
     setShowApptDropdown(false);
-    setSelectedDay(day);
   };
 
   const processPayment = () => {
@@ -288,48 +355,118 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
   const amountPaid = Math.floor(totalFees * 0.3);
   const amountRemaining = totalFees - amountPaid;
 
+  /* TIER-BASED CHAT TRIGGERS */
+  /* UNIVERSAL CHAT - Bot always available, team shows all members */
   const handleChatClick = () => {
-    if (lawyerTier === 'team') {
-      setShowChatDropdown((v) => !v);
-    } else {
-      setActiveChatTarget('lawyer');
-      setActiveChatLabel(LAWYER_NAME);
-      setMsgs((p) => [...p, {
-        id: 'sys' + Date.now(), from: 'lawyer',
-        text: `مرحباً، أنا ${LAWYER_NAME}. كيف أقدر أساعدك؟`,
-        time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
-      }]);
-    }
+    // Always show dropdown to let user choose bot or live chat
+    setShowChatDropdown((v) => !v);
   };
 
   const selectTeamMember = (member: typeof TEAM_MEMBERS[0]) => {
     setActiveChatTarget('staff');
     setActiveChatLabel(member.label);
     setShowChatDropdown(false);
-    setMsgs((p) => [...p, {
-      id: 'sys' + Date.now(), from: 'staff', staffName: member.label,
-      text: `مرحباً، أنا ${member.label}. أقدر أساعدك في أي شيء.`,
-      time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
-    }]);
+    setCurrentScreen('live_chat');
   };
 
+  const selectBotMode = () => {
+    setActiveChatTarget('bot');
+    setActiveChatLabel(`مساعد الأستاذ ${LAWYER_NAME}`);
+    setShowChatDropdown(false);
+    setCurrentScreen('live_chat');
+  };
+
+  const selectLawyerDirect = () => {
+    setActiveChatTarget('lawyer');
+    setActiveChatLabel(LAWYER_NAME);
+    setShowChatDropdown(false);
+    setCurrentScreen('live_chat');
+  };
+
+  const exitLiveChat = () => {
+    setCurrentScreen('hub');
+    setActiveChatTarget('bot');
+    setActiveChatLabel('المساعد الذكي');
+  };
+
+  /* ==================== FULL-SCREEN LIVE CHAT MODE ==================== */
+  if (currentScreen === 'live_chat') {
+    return (
+      <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column' }}>
+        <NotificationUI list={notifList} />
+
+        <header style={{
+          background: 'var(--navy)', color: '#fff', padding: '0 16px', height: 56,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          position: 'sticky', top: 0, zIndex: 100,
+          boxShadow: '0 2px 20px rgba(15,37,87,.3)',
+        }}>
+          <button onClick={exitLiveChat} style={{ background: 'rgba(255,255,255,.1)', border: '1px solid rgba(255,255,255,.2)', color: '#fff', padding: '6px 14px', borderRadius: 10, cursor: 'pointer', fontSize: 13, fontFamily: "'Cairo',sans-serif", fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <ArrowRight size={14} /> رجوع للرئيسية
+          </button>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ width: 36, height: 36, background: 'rgba(255,255,255,.15)', borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {activeChatTarget === 'bot' ? <Bot size={16} color="#fff" /> : activeChatTarget === 'lawyer' ? <span style={{ fontSize: 16 }}>👨‍⚖️</span> : <Users size={16} color="#fff" />}
+            </div>
+            <div>
+              <p style={{ fontWeight: 800, fontSize: 14 }}>{activeChatTarget === 'bot' ? `مساعد الأستاذ ${LAWYER_NAME}` : activeChatLabel}</p>
+              <p style={{ fontSize: 10, opacity: 0.6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span className="pulse" style={{ width: 6, height: 6, background: '#4ADE80', borderRadius: '50%', display: 'inline-block' }} />
+                {activeChatTarget === 'bot' ? 'محلي · 24/7' : 'مباشر · real-time'}
+              </p>
+            </div>
+          </div>
+
+          <div style={{ width: 36 }} />
+        </header>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 10, background: '#FAFBFE' }}>
+          {msgs.map((msg) => {
+            const isEmergency = msg.isEmergency || msg.text.startsWith('🆘') || msg.text.includes('【طلب طوارئ');
+            const isSystem = msg.isSystem || msg.text.startsWith('【');
+            const chatClass = msg.from === 'user' ? (isEmergency ? 'chat-emergency' : 'chat-me') : (isSystem ? 'chat-system' : (isEmergency ? 'chat-emergency' : 'chat-other'));
+            return (
+              <div key={msg.id} className="fade-up" style={{ display: 'flex', justifyContent: msg.from === 'user' ? 'flex-end' : 'flex-start', alignItems: 'flex-end', gap: 7 }}>
+                {msg.from !== 'user' && (
+                  <div style={{ width: 32, height: 32, background: isEmergency ? '#C41E3A' : msg.from === 'staff' ? 'var(--gold)' : 'var(--navy)', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, flexShrink: 0, color: '#fff', boxShadow: isEmergency ? '0 0 12px rgba(196,30,58,.4)' : 'none' }}>
+                    {isEmergency ? '🆘' : msg.from === 'bot' ? '🤖' : msg.from === 'staff' ? '📋' : '👨‍⚖️'}
+                  </div>
+                )}
+                <div className={chatClass} style={{ maxWidth: '80%', padding: '12px 16px', fontSize: 14, lineHeight: 1.8, whiteSpace: 'pre-line', direction: 'rtl' }}>
+                  {msg.staffName && msg.from === 'staff' && <p style={{ fontSize: 10, fontWeight: 800, color: isEmergency || isSystem ? '#fff' : 'var(--gold)', marginBottom: 4 }}>{msg.staffName}</p>}
+                  {msg.text}
+                  <p style={{ fontSize: 9, marginTop: 6, opacity: isEmergency || isSystem ? 0.8 : 0.5, textAlign: 'left', fontFamily: "'JetBrains Mono', monospace" }}>{msg.time}</p>
+                </div>
+              </div>
+            );
+          })}
+          <div ref={endRef} />
+        </div>
+
+        <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', display: 'flex', gap: 10, background: '#fff', paddingBottom: 'env(safe-area-inset-bottom, 12px)' }}>
+          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} placeholder={activeChatTarget === 'bot' ? 'اكتب سؤالك للمساعد...' : 'اكتب رسالتك...'} dir="rtl" maxLength={2000} style={{ flex: 1, padding: '12px 16px', border: '1.5px solid var(--border)', borderRadius: 12, fontSize: 14, fontFamily: "'Cairo',sans-serif", outline: 'none', background: '#FAFBFE' }} onFocus={(e) => { (e.currentTarget as HTMLInputElement).style.border = '1.5px solid var(--navy-mid)'; }} onBlur={(e) => { (e.currentTarget as HTMLInputElement).style.border = '1.5px solid var(--border)'; }} />
+          <Button onClick={send} style={{ padding: '12px 20px', minWidth: 56 }}><Send size={18} /></Button>
+        </div>
+      </div>
+    );
+  }
+
+  /* ==================== HUB MODE (Default) ==================== */
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column' }}>
+      <style>{detailsStyle}</style>
       <NotificationUI list={notifList} />
 
       <header style={{ background: 'var(--navy)', color: '#fff', padding: '0 16px', height: 56, display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 100 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ width: 32, height: 32, background: 'rgba(255,255,255,.15)', borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Scale size={16} color="var(--gold)" />
-          </div>
+          <div style={{ width: 32, height: 32, background: 'rgba(255,255,255,.15)', borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Scale size={16} color="var(--gold)" /></div>
           <div>
             <p style={{ fontWeight: 900, fontSize: 15, fontFamily: "'Tajawal', sans-serif" }}>مُحكَم</p>
             <p style={{ fontSize: 10, opacity: 0.6 }}>بوابة الموكل</p>
           </div>
         </div>
-        <button onClick={onLogout} style={{ background: 'rgba(255,255,255,.1)', border: '1px solid rgba(255,255,255,.2)', color: '#fff', padding: '6px 14px', borderRadius: 10, cursor: 'pointer', fontSize: 12, fontFamily: "'Cairo',sans-serif", fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <LogOut size={12} /> خروج
-        </button>
+        <button onClick={onLogout} style={{ background: 'rgba(255,255,255,.1)', border: '1px solid rgba(255,255,255,.2)', color: '#fff', padding: '6px 14px', borderRadius: 10, cursor: 'pointer', fontSize: 12, fontFamily: "'Cairo',sans-serif", fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}><LogOut size={12} /> خروج</button>
       </header>
 
       <main style={{ flex: 1, padding: 14, maxWidth: 560, width: '100%', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 14, paddingBottom: 24 }}>
@@ -344,87 +481,54 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
               <p style={{ fontSize: 18, fontWeight: 900, fontFamily: "'Tajawal', sans-serif" }}>{LAWYER_NAME}</p>
             </div>
 
-            {/* Action Grid */}
             <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-              {LAWYER_PHONE && (
-                <a href={`tel:${LAWYER_PHONE}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(255,255,255,.18)', color: '#fff', padding: '7px 12px', borderRadius: 10, fontSize: 12, fontWeight: 700, textDecoration: 'none', border: '1px solid rgba(255,255,255,.25)' }}>
-                  <Phone size={12} /> اتصال
-                </a>
-              )}
+              {LAWYER_PHONE && <a href={`tel:${LAWYER_PHONE}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(255,255,255,.18)', color: '#fff', padding: '7px 12px', borderRadius: 10, fontSize: 12, fontWeight: 700, textDecoration: 'none', border: '1px solid rgba(255,255,255,.25)' }}><Phone size={12} /> اتصال</a>}
 
-              {/* Drdsha Button with Dropdown */}
               <div ref={chatDropdownRef} style={{ position: 'relative' }}>
-                <button
-                  onClick={handleChatClick}
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 6,
-                    background: 'rgba(255,255,255,.25)', color: '#fff',
-                    padding: '7px 12px', borderRadius: 10, fontSize: 12, fontWeight: 700,
-                    border: '1px solid rgba(255,255,255,.3)', cursor: 'pointer',
-                  }}
-                >
-                  <MessageSquare size={12} /> دردشة
-                  {lawyerTier === 'team' && <ChevronDown size={10} />}
-                </button>
+                <button onClick={handleChatClick} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(255,255,255,.25)', color: '#fff', padding: '7px 12px', borderRadius: 10, fontSize: 12, fontWeight: 700, border: '1px solid rgba(255,255,255,.3)', cursor: 'pointer' }}><MessageSquare size={12} /> دردشة<ChevronDown size={10} /></button>
 
-                {showChatDropdown && lawyerTier === 'team' && (
-                  <div className="scale-in" style={{
-                    position: 'absolute', top: '100%', right: 0, left: 0, zIndex: 50,
-                    background: '#fff', borderRadius: 12, border: '1px solid var(--border)',
-                    boxShadow: '0 8px 32px rgba(15,37,87,.15)', marginTop: 6, overflow: 'hidden', minWidth: 160,
-                  }}>
-                    {TEAM_MEMBERS.map((member) => (
-                      <button key={member.id} onClick={() => selectTeamMember(member)} style={{
-                        display: 'flex', alignItems: 'center', gap: 10,
-                        padding: '10px 14px', border: 'none', background: 'transparent',
-                        cursor: 'pointer', width: '100%', textAlign: 'right',
-                        transition: 'background .15s', fontFamily: "'Cairo',sans-serif",
-                      }}>
-                        <span style={{ fontSize: 18 }}>{member.icon}</span>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{member.label}</span>
+                {showChatDropdown && (
+                  <div className="scale-in" style={{ position: 'absolute', top: '100%', right: 0, left: 0, zIndex: 50, background: '#fff', borderRadius: 12, border: '1px solid var(--border)', boxShadow: '0 8px 32px rgba(15,37,87,.15)', marginTop: 6, overflow: 'hidden', minWidth: 180 }}>
+                    {/* Bot - Universal for ALL tiers */}
+                    <button onClick={selectBotMode} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', border: 'none', background: activeChatTarget === 'bot' ? '#F5F8FF' : 'transparent', cursor: 'pointer', width: '100%', textAlign: 'right', transition: 'background .15s', fontFamily: "'Cairo',sans-serif", borderBottom: '1px solid var(--border)' }}>
+                      <span style={{ fontSize: 18 }}>🤖</span>
+                      <div style={{ flex: 1 }}><p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>المساعد الذكي</p><p style={{ fontSize: 10, color: 'var(--muted)' }}>يعمل محلياً بدون انترنت</p></div>
+                    </button>
+
+                    {/* Team tier - Show all firm members */}
+                    {lawyerTier === 'team' && TEAM_MEMBERS.map((member) => (
+                      <button key={member.id} onClick={() => selectTeamMember(member)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', border: 'none', background: 'transparent', cursor: 'pointer', width: '100%', textAlign: 'right', transition: 'background .15s', fontFamily: "'Cairo',sans-serif" }}>
+                        <span style={{ fontSize: 18 }}>{member.icon}</span><span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{member.label}</span>
                       </button>
                     ))}
+
+                    {/* Free/Premium tiers - Direct lawyer chat */}
+                    {lawyerTier !== 'team' && (
+                      <button onClick={selectLawyerDirect} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', border: 'none', background: 'transparent', cursor: 'pointer', width: '100%', textAlign: 'right', transition: 'background .15s', fontFamily: "'Cairo',sans-serif" }}>
+                        <span style={{ fontSize: 18 }}>👨‍⚖️</span><span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{LAWYER_NAME}</span>
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
 
-              {amountRemaining > 0 && (
-                <button onClick={() => setShowPayment(true)} style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 6,
-                  background: 'var(--gold)', color: '#fff',
-                  padding: '7px 12px', borderRadius: 10, fontSize: 12, fontWeight: 700,
-                  border: 'none', cursor: 'pointer',
-                }}>
-                  <CreditCard size={12} /> سداد
-                </button>
-              )}
+              {amountRemaining > 0 && <button onClick={() => setShowPayment(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'var(--gold)', color: '#fff', padding: '7px 12px', borderRadius: 10, fontSize: 12, fontWeight: 700, border: 'none', cursor: 'pointer' }}><CreditCard size={12} /> سداد</button>}
             </div>
           </div>
 
-          {/* Aggregated Cases Display */}
+          {/* Aggregated Cases */}
           {aggregatedCases.length > 0 && (
             <div className="fade-up" style={{ padding: '12px 18px', background: '#F5F8FF', borderTop: '1px solid var(--border)' }}>
               <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 8 }}>قضاياك ({aggregatedCases.length})</p>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {aggregatedCases.map((c) => (
-                  <button
-                    key={c.id}
-                    onClick={() => setSelectedCase(c)}
-                    style={{
-                      padding: '6px 12px', borderRadius: 8, border: selectedCase?.id === c.id ? '2px solid var(--navy)' : '1px solid var(--border)',
-                      background: selectedCase?.id === c.id ? '#fff' : 'transparent',
-                      cursor: 'pointer', fontSize: 11, fontWeight: 700,
-                      fontFamily: "'Cairo',sans-serif", transition: 'all .15s',
-                    }}
-                  >
-                    {c.case_number}
-                  </button>
+                  <button key={c.id} onClick={() => setSelectedCase(c)} style={{ padding: '6px 12px', borderRadius: 8, border: selectedCase?.id === c.id ? '2px solid var(--navy)' : '1px solid var(--border)', background: selectedCase?.id === c.id ? '#fff' : 'transparent', cursor: 'pointer', fontSize: 11, fontWeight: 700, fontFamily: "'Cairo',sans-serif", transition: 'all .15s' }}>{c.case_number}</button>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Selected Case Details */}
+          {/* Selected Case Details + COLLAPSIBLE BILLING ACCORDION */}
           {selectedCase && (
             <div className="fade-up" style={{ padding: '12px 18px', background: '#fff', borderTop: '1px solid var(--border)' }}>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -433,154 +537,127 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
                 {selectedCase.case_type && <Badge color="default">{selectedCase.case_type}</Badge>}
               </div>
 
-              {/* Billing Summary */}
-              <div style={{ background: '#F5F8FF', borderRadius: 10, padding: '12px 14px' }}>
-                <p style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', marginBottom: 8 }}>ملخص الفواتير</p>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <span style={{ fontSize: 12, color: 'var(--text)' }}>إجمالي الأتعاب</span>
-                  <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--navy)', fontFamily: "'JetBrains Mono', monospace" }}>{totalFees.toLocaleString()} ج</span>
+              {/* COLLAPSIBLE BILLING ACCORDION */}
+              <details>
+                <summary style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <CreditCard size={14} color="var(--navy)" />
+                  <span>ملخص الفواتير</span>
+                  <ChevronLeft size={14} style={{ marginRight: 'auto' }} />
+                </summary>
+                <div className="details-content">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, color: 'var(--text)' }}>إجمالي الأتعاب</span>
+                    <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--navy)', fontFamily: "'JetBrains Mono', monospace" }}>{totalFees.toLocaleString()} ج</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, color: 'var(--text)' }}>المدفوع</span>
+                    <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--success)', fontFamily: "'JetBrains Mono', monospace" }}>{amountPaid.toLocaleString()} ج</span>
+                  </div>
+                  <div style={{ height: 1, background: 'var(--border)', margin: '8px 0' }} />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--danger)' }}>المتبقي</span>
+                    <span style={{ fontSize: 15, fontWeight: 900, color: 'var(--danger)', fontFamily: "'JetBrains Mono', monospace" }}>{amountRemaining.toLocaleString()} ج</span>
+                  </div>
+                  <div style={{ marginTop: 10, height: 6, borderRadius: 3, background: 'var(--border)', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', borderRadius: 3, background: 'var(--success)', width: `${totalFees ? (amountPaid / totalFees) * 100 : 0}%`, transition: 'width .5s ease' }} />
+                  </div>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <span style={{ fontSize: 12, color: 'var(--text)' }}>المدفوع</span>
-                  <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--success)', fontFamily: "'JetBrains Mono', monospace" }}>{amountPaid.toLocaleString()} ج</span>
-                </div>
-                <div style={{ height: 1, background: 'var(--border)', margin: '8px 0' }} />
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--danger)' }}>المتبقي</span>
-                  <span style={{ fontSize: 15, fontWeight: 900, color: 'var(--danger)', fontFamily: "'JetBrains Mono', monospace" }}>{amountRemaining.toLocaleString()} ج</span>
-                </div>
-                <div style={{ marginTop: 10, height: 6, borderRadius: 3, background: 'var(--border)', overflow: 'hidden' }}>
-                  <div style={{ height: '100%', borderRadius: 3, background: 'var(--success)', width: `${totalFees ? (amountPaid / totalFees) * 100 : 0}%`, transition: 'width .5s ease' }} />
-                </div>
-              </div>
+              </details>
             </div>
           )}
         </Card>
 
-        {/* Appointment Booking Dropdown - Dynamic from lawyer_availability */}
+        {/* SIMPLIFIED BOOKING ENGINE */}
         {selectedCase && (
           <div ref={apptDropdownRef} style={{ position: 'relative' }}>
-            <Button
-              variant="gold"
-              fullWidth
-              onClick={() => setShowApptDropdown((v) => !v)}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center' }}
-            >
-              <Calendar size={16} /> {apptSubmitted ? `✓ موعد يوم ${[...DAYS_OF_WEEK_STATIC].find(d => d.id === selectedDay)?.label || selectedDay}` : 'حجز موعد'}
+            <Button variant="gold" fullWidth onClick={() => setShowApptDropdown((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center' }}>
+              <Calendar size={16} /> {apptSubmitted ? `✓ تم إرسال الطلب` : 'حجز موعد'}
               <ChevronDown size={12} />
             </Button>
 
             {showApptDropdown && !apptSubmitted && (
-              <div className="scale-in" style={{
-                position: 'absolute', top: '100%', right: 0, left: 0, zIndex: 50,
-                background: '#fff', borderRadius: 12, border: '1px solid var(--border)',
-                boxShadow: '0 8px 32px rgba(15,37,87,.15)', marginTop: 6, overflow: 'hidden',
-              }}>
-                <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--border)' }}>
-                  <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)' }}>
-                    {availableDays.length > 0 ? 'اختر يوم الموعد (حسب مواعيد المحامي)' : 'اختر يوم الموعد'}
-                  </p>
-                </div>
-                {(availableDays.length > 0 ? availableDays.map(dayId => DAYS_OF_WEEK_STATIC.find(d => d.id === dayId)).filter(Boolean) : DAYS_OF_WEEK_STATIC).map((day) => (
-                  <button
-                    key={day!.id}
-                    onClick={() => submitAppointment(day!.id)}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 10,
-                      padding: '10px 14px', border: 'none', background: 'transparent',
-                      cursor: 'pointer', width: '100%', textAlign: 'right',
-                      transition: 'background .15s', fontFamily: "'Cairo',sans-serif",
-                    }}
-                  >
-                    <Calendar size={14} color="var(--navy)" />
-                    <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{day!.label}</span>
-                    {availableSlots.length > 0 && (
-                      <span style={{ fontSize: 10, color: 'var(--muted)', marginRight: 'auto' }}>
-                        {availableSlots.slice(0, 3).join(' · ')}{availableSlots.length > 3 ? ' ...' : ''}
-                      </span>
-                    )}
-                  </button>
-                ))}
-                {availableSlots.length > 0 && (
-                  <div style={{ padding: '8px 14px', background: '#F5F8FF', borderTop: '1px solid var(--border)' }}>
-                    <p style={{ fontSize: 10, color: 'var(--muted)' }}>
-                      ⏰ الأوقات المتاحة: {availableSlots.join(' - ')}
-                    </p>
+              <Card className="scale-in" style={{ position: 'absolute', top: '100%', right: 0, left: 0, zIndex: 50, marginTop: 6, padding: 16 }}>
+                <p style={{ fontSize: 13, fontWeight: 800, color: 'var(--navy)', marginBottom: 12 }}>اختر يوم ووقت الموعد</p>
+
+                {/* Day Selection */}
+                <div style={{ marginBottom: 12 }}>
+                  <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 6 }}>اليوم</p>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {(availableDays.length > 0 ? availableDays.map(dayId => DAYS_OF_WEEK.find(d => d.id === dayId)).filter(Boolean) : DAYS_OF_WEEK).map((day) => (
+                      <button key={day!.id} onClick={() => setSelectedDay(day!.id)} style={{ padding: '6px 12px', borderRadius: 8, border: selectedDay === day!.id ? '2px solid var(--navy)' : '1px solid var(--border)', background: selectedDay === day!.id ? '#F5F8FF' : '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 700, fontFamily: "'Cairo',sans-serif", transition: 'all .15s' }}>{day!.label}</button>
+                    ))}
                   </div>
-                )}
-              </div>
+                </div>
+
+                {/* Time Range Inputs */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+                  <div>
+                    <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 6 }}>من الساعة</p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', border: '1.5px solid var(--border)', borderRadius: 8, background: '#FAFBFE' }}>
+                      <Clock size={14} color="var(--muted)" />
+                      <input type="time" value={timeFrom} onChange={(e) => setTimeFrom(e.target.value)} style={{ flex: 1, border: 'none', background: 'transparent', fontSize: 13, fontFamily: "'JetBrains Mono', monospace", outline: 'none' }} />
+                    </div>
+                  </div>
+                  <div>
+                    <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 6 }}>إلى الساعة</p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', border: '1.5px solid var(--border)', borderRadius: 8, background: '#FAFBFE' }}>
+                      <Clock size={14} color="var(--muted)" />
+                      <input type="time" value={timeTo} onChange={(e) => setTimeTo(e.target.value)} style={{ flex: 1, border: 'none', background: 'transparent', fontSize: 13, fontFamily: "'JetBrains Mono', monospace", outline: 'none' }} />
+                    </div>
+                  </div>
+                </div>
+
+                <Button fullWidth onClick={submitAppointment} disabled={!selectedDay}>
+                  {selectedDay ? `إرسال طلب الموعد` : 'اختر اليوم أولاً'}
+                </Button>
+              </Card>
             )}
           </div>
         )}
 
-        {/* Payment Credentials Display - طرق الدفع والتحويل البديلة */}
+        {/* COLLAPSIBLE PAYMENT CREDENTIALS ACCORDION */}
         {lawyerPaymentInfo && (lawyerPaymentInfo.vodafone_cash_number || lawyerPaymentInfo.instapay_address || lawyerPaymentInfo.bank_account_details) && (
-          <Card style={{ overflow: 'hidden' }}>
-            <div style={{ padding: '12px 16px', background: 'linear-gradient(135deg, #F0F4FC, #E8F0FE)', borderBottom: '1px solid var(--border)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Wallet size={16} color="var(--navy)" />
-                <p style={{ fontSize: 13, fontWeight: 800, color: 'var(--navy)' }}>طرق الدفع والتحويل البديلة</p>
-              </div>
-              <p style={{ fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>يمكنك استخدام هذه الطرق كبديل للدفع الإلكتروني</p>
-            </div>
-            <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <details>
+            <summary style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Wallet size={14} color="var(--navy)" />
+              <span>طرق الدفع والتحويل البديلة</span>
+              <ChevronLeft size={14} style={{ marginRight: 'auto' }} />
+            </summary>
+            <div className="details-content" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {lawyerPaymentInfo.vodafone_cash_number && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: '#FFF0F0', borderRadius: 10, border: '1px solid #FFE0E0' }}>
-                  <span style={{ fontSize: 20 }}>📱</span>
+                  <span style={{ fontSize: 18 }}>📱</span>
                   <div style={{ flex: 1 }}>
                     <p style={{ fontSize: 11, fontWeight: 700, color: '#E60000' }}>فودافون كاش</p>
-                    <p style={{ fontSize: 14, fontWeight: 900, color: 'var(--text)', fontFamily: "'JetBrains Mono', monospace", direction: 'ltr', textAlign: 'left' }}>{lawyerPaymentInfo.vodafone_cash_number}</p>
+                    <p style={{ fontSize: 13, fontWeight: 900, color: 'var(--text)', fontFamily: "'JetBrains Mono', monospace", direction: 'ltr', textAlign: 'left' }}>{lawyerPaymentInfo.vodafone_cash_number}</p>
                   </div>
-                  <button onClick={() => { navigator.clipboard.writeText(lawyerPaymentInfo.vodafone_cash_number!); push('تم نسخ الرقم', 'success'); }} style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 4 }}>
-                    <span style={{ fontSize: 14 }}>📋</span>
-                  </button>
+                  <button onClick={() => { navigator.clipboard.writeText(lawyerPaymentInfo.vodafone_cash_number!); push('تم نسخ الرقم', 'success'); }} style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 4 }}><span style={{ fontSize: 14 }}>📋</span></button>
                 </div>
               )}
               {lawyerPaymentInfo.instapay_address && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: '#F0F8FF', borderRadius: 10, border: '1px solid #E0F0FF' }}>
-                  <span style={{ fontSize: 20 }}>💳</span>
+                  <span style={{ fontSize: 18 }}>💳</span>
                   <div style={{ flex: 1 }}>
                     <p style={{ fontSize: 11, fontWeight: 700, color: '#0066CC' }}>InstaPay</p>
-                    <p style={{ fontSize: 13, fontWeight: 900, color: 'var(--text)', fontFamily: "'JetBrains Mono', monospace", direction: 'ltr', textAlign: 'left' }}>{lawyerPaymentInfo.instapay_address}</p>
+                    <p style={{ fontSize: 12, fontWeight: 900, color: 'var(--text)', fontFamily: "'JetBrains Mono', monospace", direction: 'ltr', textAlign: 'left' }}>{lawyerPaymentInfo.instapay_address}</p>
                   </div>
-                  <button onClick={() => { navigator.clipboard.writeText(lawyerPaymentInfo.instapay_address!); push('تم نسخ العنوان', 'success'); }} style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 4 }}>
-                    <span style={{ fontSize: 14 }}>📋</span>
-                  </button>
+                  <button onClick={() => { navigator.clipboard.writeText(lawyerPaymentInfo.instapay_address!); push('تم نسخ العنوان', 'success'); }} style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 4 }}><span style={{ fontSize: 14 }}>📋</span></button>
                 </div>
               )}
               {lawyerPaymentInfo.bank_account_details && (lawyerPaymentInfo.bank_account_details.iban || lawyerPaymentInfo.bank_account_details.account_number) && (
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px', background: '#F8FCF8', borderRadius: 10, border: '1px solid #E8F4E8' }}>
-                  <span style={{ fontSize: 20 }}>🏦</span>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', background: '#F8FCF8', borderRadius: 10, border: '1px solid #E8F4E8' }}>
+                  <span style={{ fontSize: 18 }}>🏦</span>
                   <div style={{ flex: 1 }}>
-                    <p style={{ fontSize: 11, fontWeight: 700, color: '#008800', marginBottom: 8 }}>تحويل بنكي</p>
-                    {lawyerPaymentInfo.bank_account_details.bank_name && (
-                      <p style={{ fontSize: 12, color: 'var(--text)', marginBottom: 4 }}>
-                        <span style={{ fontWeight: 700 }}>البنك:</span> {lawyerPaymentInfo.bank_account_details.bank_name}
-                      </p>
-                    )}
-                    {lawyerPaymentInfo.bank_account_details.account_holder && (
-                      <p style={{ fontSize: 12, color: 'var(--text)', marginBottom: 4 }}>
-                        <span style={{ fontWeight: 700 }}>اسم الحساب:</span> {lawyerPaymentInfo.bank_account_details.account_holder}
-                      </p>
-                    )}
-                    {lawyerPaymentInfo.bank_account_details.iban && (
-                      <p style={{ fontSize: 11, color: 'var(--text)', fontFamily: "'JetBrains Mono', monospace", direction: 'ltr', textAlign: 'left', marginBottom: 4 }}>
-                        <span style={{ fontWeight: 700 }}>IBAN: </span>{lawyerPaymentInfo.bank_account_details.iban}
-                      </p>
-                    )}
-                    {lawyerPaymentInfo.bank_account_details.account_number && (
-                      <p style={{ fontSize: 11, color: 'var(--text)', fontFamily: "'JetBrains Mono', monospace", direction: 'ltr', textAlign: 'left' }}>
-                        <span style={{ fontWeight: 700 }}>رقم الحساب: </span>{lawyerPaymentInfo.bank_account_details.account_number}
-                      </p>
-                    )}
+                    <p style={{ fontSize: 11, fontWeight: 700, color: '#008800', marginBottom: 6 }}>تحويل بنكي</p>
+                    {lawyerPaymentInfo.bank_account_details.bank_name && <p style={{ fontSize: 11, color: 'var(--text)', marginBottom: 3 }}><span style={{ fontWeight: 700 }}>البنك:</span> {lawyerPaymentInfo.bank_account_details.bank_name}</p>}
+                    {lawyerPaymentInfo.bank_account_details.account_holder && <p style={{ fontSize: 11, color: 'var(--text)', marginBottom: 3 }}><span style={{ fontWeight: 700 }}>الحساب:</span> {lawyerPaymentInfo.bank_account_details.account_holder}</p>}
+                    {lawyerPaymentInfo.bank_account_details.iban && <p style={{ fontSize: 10, color: 'var(--text)', fontFamily: "'JetBrains Mono', monospace", direction: 'ltr', textAlign: 'left', marginBottom: 3 }}><span style={{ fontWeight: 700 }}>IBAN: </span>{lawyerPaymentInfo.bank_account_details.iban}</p>}
+                    {lawyerPaymentInfo.bank_account_details.account_number && <p style={{ fontSize: 10, color: 'var(--text)', fontFamily: "'JetBrains Mono', monospace", direction: 'ltr', textAlign: 'left' }}><span style={{ fontWeight: 700 }}>رقم: </span>{lawyerPaymentInfo.bank_account_details.account_number}</p>}
                   </div>
-                  <button onClick={() => { navigator.clipboard.writeText(lawyerPaymentInfo.bank_account_details!.iban || lawyerPaymentInfo.bank_account_details!.account_number || ''); push('تم نسخ بيانات الحساب', 'success'); }} style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 4 }}>
-                    <span style={{ fontSize: 14 }}>📋</span>
-                  </button>
                 </div>
               )}
             </div>
-          </Card>
+          </details>
         )}
 
         {/* Emergency */}
@@ -599,56 +676,6 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
             <p style={{ fontSize: 12, opacity: 0.85, marginTop: 4 }}>سيتواصل معك {LAWYER_NAME} في أقرب وقت</p>
           </div>
         ))}
-
-        {/* Chat window */}
-        <Card style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', flex: 1, minHeight: 380 }}>
-          <div style={{ background: 'var(--navy)', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ width: 34, height: 34, background: 'rgba(255,255,255,.15)', borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              {activeChatTarget === 'bot' ? <Bot size={16} color="#fff" /> : activeChatTarget === 'lawyer' ? <span style={{ fontSize: 14 }}>👨‍⚖️</span> : <Users size={16} color="#fff" />}
-            </div>
-            <div>
-              <p style={{ fontWeight: 800, color: '#fff', fontSize: 13 }}>
-                {activeChatTarget === 'bot' ? `مساعد الأستاذ ${LAWYER_NAME}` : activeChatLabel}
-              </p>
-              <p style={{ fontSize: 10, color: 'rgba(255,255,255,.5)' }}>
-                {activeChatTarget === 'bot' ? 'يعمل محلياً · بدون انترنت · 24/7' : 'شات مباشر · real-time'}
-              </p>
-            </div>
-            <div style={{ marginRight: 'auto', display: 'flex', alignItems: 'center', gap: 5 }}>
-              <span className="pulse" style={{ width: 7, height: 7, background: '#4ADE80', borderRadius: '50%', display: 'inline-block' }} />
-              <span style={{ fontSize: 10, color: '#4ADE80', fontWeight: 700 }}>نشط</span>
-            </div>
-          </div>
-
-          <div style={{ flex: 1, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 10, background: '#FAFBFE' }}>
-            {msgs.map((msg) => {
-              const isEmergency = msg.isEmergency || msg.text.includes('🆘') || msg.text.includes('【طلب طوارئ');
-              const isSystem = msg.isSystem || msg.text.startsWith('【');
-              const chatClass = msg.from === 'user'
-                ? (isEmergency ? 'chat-emergency' : 'chat-me')
-                : (isSystem ? 'chat-system' : (isEmergency ? 'chat-emergency' : 'chat-other'));
-              return (
-              <div key={msg.id} className="fade-up" style={{ display: 'flex', justifyContent: msg.from === 'user' ? 'flex-end' : 'flex-start', alignItems: 'flex-end', gap: 7 }}>
-                {msg.from !== 'user' && (
-                  <div style={{ width: 26, height: 26, background: isEmergency ? '#C41E3A' : msg.from === 'staff' ? 'var(--gold)' : 'var(--navy)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, flexShrink: 0, color: '#fff' }}>
-                    {isEmergency ? '🆘' : msg.from === 'bot' ? '🤖' : msg.from === 'staff' ? '📋' : '👨‍⚖️'}
-                  </div>
-                )}
-                <div className={chatClass} style={{ maxWidth: '78%', padding: '10px 14px', fontSize: 13, lineHeight: 1.75, whiteSpace: 'pre-line', direction: 'rtl' }}>
-                  {msg.staffName && msg.from === 'staff' && <p style={{ fontSize: 10, fontWeight: 800, color: isEmergency || isSystem ? '#fff' : 'var(--gold)', marginBottom: 4 }}>{msg.staffName}</p>}
-                  {msg.text}
-                  <p style={{ fontSize: 9, marginTop: 4, opacity: isEmergency || isSystem ? 0.7 : 0.45, textAlign: 'left', fontFamily: "'JetBrains Mono', monospace" }}>{msg.time}</p>
-                </div>
-              </div>
-            );})}
-            <div ref={endRef} />
-          </div>
-
-          <div style={{ padding: '10px 12px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, background: '#fff' }}>
-            <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} placeholder="اكتب رسالتك للأستاذ..." dir="rtl" maxLength={2000} style={{ flex: 1, padding: '10px 14px', border: '1.5px solid var(--border)', borderRadius: 10, fontSize: 13, fontFamily: "'Cairo',sans-serif", outline: 'none' }} onFocus={(e) => { (e.currentTarget as HTMLInputElement).style.border = '1.5px solid var(--navy-mid)'; }} onBlur={(e) => { (e.currentTarget as HTMLInputElement).style.border = '1.5px solid var(--border)'; }} />
-            <Button onClick={send} style={{ padding: '10px 16px' }}><Send size={16} /></Button>
-          </div>
-        </Card>
       </main>
 
       {/* Emergency Modal */}
@@ -673,9 +700,7 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
       {showPayment && (
         <Modal onClose={() => { if (!paymentProcessing) setShowPayment(false); }} style={{ maxWidth: 480 }}>
           <div style={{ padding: '18px 20px', borderBottom: '1px solid var(--border)' }}>
-            <h3 style={{ fontWeight: 800, color: 'var(--navy)', fontSize: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Wallet size={18} /> الدفع عبر Paymob
-            </h3>
+            <h3 style={{ fontWeight: 800, color: 'var(--navy)', fontSize: 16, display: 'flex', alignItems: 'center', gap: 8 }}><Wallet size={18} /> الدفع عبر Paymob</h3>
           </div>
 
           {paymentDone ? (
@@ -686,55 +711,25 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
             </div>
           ) : (
             <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
-              {/* Amount summary */}
               <div style={{ background: '#FFFBEB', borderRadius: 10, padding: '12px 16px', textAlign: 'center' }}>
                 <p style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700 }}>المبلغ المتبقي</p>
                 <p style={{ fontSize: 28, fontWeight: 900, color: 'var(--gold)', fontFamily: "'JetBrains Mono', monospace", marginTop: 4 }}>{amountRemaining.toLocaleString()} ج</p>
               </div>
 
-              {/* Paymob Channels */}
               <p style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)' }}>اختر طريقة الدفع</p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {PAYMOB_CHANNELS.map((ch) => (
-                  <button
-                    key={ch.id}
-                    onClick={() => setSelectedChannel(ch.id)}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 12,
-                      padding: '12px 16px', borderRadius: 12,
-                      border: selectedChannel === ch.id ? `2px solid ${ch.color}` : '1.5px solid var(--border)',
-                      background: selectedChannel === ch.id ? `${ch.color}08` : '#fff',
-                      cursor: 'pointer', transition: 'all .15s', textAlign: 'right',
-                    }}
-                  >
+                  <button key={ch.id} onClick={() => setSelectedChannel(ch.id)} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderRadius: 12, border: selectedChannel === ch.id ? `2px solid ${ch.color}` : '1.5px solid var(--border)', background: selectedChannel === ch.id ? `${ch.color}08` : '#fff', cursor: 'pointer', transition: 'all .15s', textAlign: 'right' }}>
                     <span style={{ fontSize: 20, flexShrink: 0 }}>{ch.icon}</span>
-                    <div style={{ flex: 1 }}>
-                      <p style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>{ch.label}</p>
-                      <p style={{ fontSize: 11, color: 'var(--muted)' }}>{ch.desc}</p>
-                    </div>
-                    {selectedChannel === ch.id && (
-                      <div style={{ width: 20, height: 20, borderRadius: '50%', background: ch.color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                        <span style={{ color: '#fff', fontSize: 12, fontWeight: 900 }}>✓</span>
-                      </div>
-                    )}
+                    <div style={{ flex: 1 }}><p style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>{ch.label}</p><p style={{ fontSize: 11, color: 'var(--muted)' }}>{ch.desc}</p></div>
+                    {selectedChannel === ch.id && <div style={{ width: 20, height: 20, borderRadius: '50%', background: ch.color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><span style={{ color: '#fff', fontSize: 12, fontWeight: 900 }}>✓</span></div>}
                   </button>
                 ))}
               </div>
 
-              {/* Security notice */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', background: '#F5F8FF', borderRadius: 8 }}>
-                <Lock size={12} color="var(--navy)" />
-                <span style={{ fontSize: 11, color: 'var(--muted)' }}>معاملات Paymob مشفرة ومحمية</span>
-              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', background: '#F5F8FF', borderRadius: 8 }}><Lock size={12} color="var(--navy)" /><span style={{ fontSize: 11, color: 'var(--muted)' }}>معاملات Paymob مشفرة ومحمية</span></div>
 
-              {/* Pay button */}
-              <Button
-                variant="gold"
-                fullWidth
-                disabled={!selectedChannel || paymentProcessing}
-                onClick={processPayment}
-                style={{ padding: '14px 24px', fontSize: 15, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
-              >
+              <Button variant="gold" fullWidth disabled={!selectedChannel || paymentProcessing} onClick={processPayment} style={{ padding: '14px 24px', fontSize: 15, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
                 {paymentProcessing ? <><span className="spin" style={{ display: 'inline-block', width: 16, height: 16, border: '2.5px solid rgba(255,255,255,.3)', borderTopColor: '#fff', borderRadius: '50%' }} /> جاري المعالجة...</> : <><CreditCard size={16} /> ادفع {amountRemaining.toLocaleString()} ج</>}
               </Button>
             </div>

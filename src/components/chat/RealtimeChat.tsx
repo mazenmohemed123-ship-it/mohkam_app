@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Send, Edit3, Trash2, MessageSquare, Shield, Scale, Phone, Hash, FileText, User, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Send, CreditCard as Edit3, Trash2, MessageSquare, Shield, Scale, Phone, Hash, FileText, User, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button, Card, Badge } from '../atoms';
 import { sanitize } from '../../services/sanitize';
 import { supabase } from '../../services/supabase';
@@ -28,7 +28,7 @@ interface CaseInfo {
 
 /* Helper functions for emergency/system message detection */
 const isEmergencyMessage = (text: string): boolean =>
-  text.includes('🆘') || text.includes('【طلب طوارئ') || text.includes('عاجل');
+  text.startsWith('🆘') || text.includes('【طلب طوارئ') || text.includes('🆘 [طلب طوارئ');
 
 const isSystemMessage = (text: string): boolean =>
   text.startsWith('【') || text.includes('تم قبول') || text.includes('تم رفض');
@@ -306,19 +306,31 @@ export function RealtimeChat({ cases, userId, push }: RealtimeChatProps) {
                   <div
                     key={msg.id}
                     className="fade-up"
-                    style={{ display: 'flex', justifyContent: isMe ? 'flex-start' : 'flex-end', position: 'relative' }}
+                    style={{ display: 'flex', justifyContent: isEmergency ? 'flex-end' : (isMe ? 'flex-start' : 'flex-end'), position: 'relative' }}
                     onMouseEnter={() => setHoveredId(msg.id)}
                     onMouseLeave={() => setHoveredId(null)}
                   >
-                    <div style={{ position: 'relative', maxWidth: '72%' }}>
+                    <div style={{ position: 'relative', maxWidth: '76%' }}>
                       {isEmergency && !msg.is_deleted && (
-                        <div style={{ position: 'absolute', top: -6, right: -6, width: 14, height: 14, background: '#C41E3A', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 5 }}>
-                          <span style={{ fontSize: 8, color: '#fff' }}>🆘</span>
+                        <div style={{
+                          position: 'absolute', top: -8, right: -8,
+                          width: 18, height: 18, background: 'linear-gradient(135deg, #C41E3A, #8B0000)',
+                          borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 5,
+                          boxShadow: '0 0 12px rgba(196,30,58,.6)',
+                          animation: 'ping 1.2s ease infinite',
+                        }}>
+                          <span style={{ fontSize: 10 }}>🆘</span>
                         </div>
                       )}
                       <div
                         className={chatClass}
-                        style={{ padding: '10px 14px', fontSize: 13, lineHeight: 1.75, direction: 'rtl' }}
+                        style={{
+                          padding: isEmergency ? '14px 18px' : '10px 14px',
+                          fontSize: isEmergency ? 14 : 13,
+                          lineHeight: 1.75,
+                          direction: 'rtl',
+                          boxShadow: isEmergency ? '0 6px 24px rgba(196,30,58,.4)' : undefined,
+                        }}
                       >
                         {editingId === msg.id ? (
                           <div style={{ display: 'flex', gap: 6 }}>

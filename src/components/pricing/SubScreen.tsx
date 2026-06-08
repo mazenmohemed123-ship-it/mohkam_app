@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Crown, Zap, Users, Lock, Check, MapPin } from 'lucide-react';
+import { Crown, Zap, Users, Lock, Check, MapPin, Wallet, CreditCard, Shield, ArrowRight } from 'lucide-react';
 import { Button, Card, Badge, Spinner } from '../atoms';
 import { supabase } from '../../services/supabase';
 import { useRole, type Tier } from '../../context/RoleContext';
@@ -22,6 +22,13 @@ interface TierInfo {
   badge?: string;
   features: string[];
 }
+
+/* Paymob payment channels */
+const PAYMOB_CHANNELS = [
+  { id: 'card', label: 'بطاقة ائتمانية', desc: 'فيزا / ماستركارد / Meeza', icon: '💳', color: '#635BFF' },
+  { id: 'vodafone', label: 'فودافون كاش', desc: 'محفظة فودافون كاش', icon: '📱', color: '#E60000' },
+  { id: 'aman', label: 'أمان', desc: 'محفظة أمان الإلكترونية', icon: '🏦', color: '#00B4D8' },
+];
 
 const TIERS: TierInfo[] = [
   {
@@ -58,33 +65,83 @@ export function SubScreen({ profile, onUpdateProfile, push, caseCount = 0 }: Sub
   const [locale, setLocale] = useState<'local' | 'intl'>('local');
   const { isTeamLocked, tier } = useRole();
 
+  /* Paymob checkout modal state */
+  const [showCheckout, setShowCheckout] = useState(false);
+  const [selectedTier, setSelectedTier] = useState<TierInfo | null>(null);
+  const [selectedChannel, setSelectedChannel] = useState<string>('');
+  const [processing, setProcessing] = useState(false);
+  const [paymentSuccess, setPaymentSuccess] = useState(false);
+
   useEffect(() => {
     setLocale(detectLocale());
   }, []);
 
   const isOutsideEgypt = locale === 'intl';
 
-  const upgrade = async (tierToSet: Tier) => {
-    setUpgrading(tierToSet);
+  /* Open Paymob checkout modal instead of immediate upgrade */
+  const openCheckout = (tierInfo: TierInfo) => {
+    if (tierInfo.id === 'free') return; // Free tier doesn't need payment
+    setSelectedTier(tierInfo);
+    setSelectedChannel('');
+    setPaymentSuccess(false);
+    setShowCheckout(true);
+  };
+
+  const closeCheckout = () => {
+    if (processing) return; // Prevent closing during processing
+    setShowCheckout(false);
+    setSelectedTier(null);
+    setSelectedChannel('');
+  };
+
+  /* Process payment through Paymob - simulate gateway connection */
+  const processPayment = async () => {
+    if (!selectedTier || !selectedChannel) return;
+
+    setProcessing(true);
+
+    // Simulate connection to Paymob gateway
+    // In production: Call Supabase Edge Function to create Paymob order, get payment key, redirect to checkout
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Simulate successful webhook response
+    // In production: Webhook from Paymob would update the database
     const { error } = await supabase.from('profiles').update({
-      tier: tierToSet,
+      tier: selectedTier.id,
       started_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
     }).eq('id', profile.id);
 
+    setProcessing(false);
+
     if (!error) {
-      const updated = { ...profile, tier: tierToSet, started_at: new Date().toISOString(), expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() };
+      setPaymentSuccess(true);
+      const updated = {
+        ...profile,
+        tier: selectedTier.id,
+        started_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+      };
       onUpdateProfile(updated);
-      push(`✓ تمت الترقية إلى ${tierToSet === 'premium' ? 'الاحترافي' : 'الفريق'}`, 'success');
+      push(`✓ تمت الترقية إلى ${selectedTier.name} بنجاح!`, 'success');
+
+      // Auto-close after showing success
+      setTimeout(() => {
+        setShowCheckout(false);
+        setSelectedTier(null);
+      }, 2000);
     } else {
-      push('خطأ: ' + error.message, 'danger');
+      push('خطأ في تحديث الباقة: ' + error.message, 'danger');
     }
-    setUpgrading(null);
   };
 
   const formatPrice = (t: TierInfo) => {
     if (isOutsideEgypt) return `$${t.priceIntl}`;
     return `${t.priceLocal.toLocaleString('ar-EG')} ج`;
+  };
+
+  const getPrice = (t: TierInfo) => {
+    return isOutsideEgypt ? t.priceIntl : t.priceLocal;
   };
 
   const isFreeTierLocked = tier === 'free' && caseCount >= 3;
@@ -117,7 +174,7 @@ export function SubScreen({ profile, onUpdateProfile, push, caseCount = 0 }: Sub
         </div>
       )}
 
-      {/* Tier Cards - Responsive Grid */}
+      {/* Tier Cards - Responsive Grid - All 3 visible on mobile/desktop */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {TIERS.map((t) => {
           const isCur = (profile?.tier || 'free') === t.id;
@@ -181,7 +238,7 @@ export function SubScreen({ profile, onUpdateProfile, push, caseCount = 0 }: Sub
               <Button
                 variant={isCur ? 'secondary' : t.id === 'team' ? 'gold' : 'primary'}
                 disabled={isCur || upgrading === t.id || isLocked}
-                onClick={() => !isLocked && upgrade(t.id)}
+                onClick={() => !isLocked && openCheckout(t)}
                 fullWidth
                 style={{ background: isCur ? undefined : t.color }}
               >
@@ -214,6 +271,169 @@ export function SubScreen({ profile, onUpdateProfile, push, caseCount = 0 }: Sub
           );
         })}
       </div>
+
+      {/* ==================== PAYMOB CHECKOUT MODAL ==================== */}
+      {showCheckout && selectedTier && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(10,20,60,.8)', backdropFilter: 'blur(8px)',
+          zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+        }}>
+          <Card className="slide-up" style={{ width: '100%', maxWidth: 480, overflow: 'hidden' }}>
+            {/* Header */}
+            <div style={{
+              background: 'linear-gradient(135deg, var(--navy), var(--navy-light))',
+              padding: '20px 24px', color: '#fff',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{
+                    width: 48, height: 48, borderRadius: 12, background: 'rgba(255,255,255,.15)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <selectedTier.icon size={24} color={selectedTier.color} />
+                  </div>
+                  <div>
+                    <p style={{ fontSize: 18, fontWeight: 900 }}>ترقية إلى {selectedTier.name}</p>
+                    <p style={{ fontSize: 12, opacity: 0.7 }}>دفع آمن عبر Paymob</p>
+                  </div>
+                </div>
+                {!processing && (
+                  <button
+                    onClick={closeCheckout}
+                    style={{
+                      background: 'rgba(255,255,255,.15)', border: 'none',
+                      color: '#fff', width: 32, height: 32, borderRadius: 8,
+                      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}
+                  >
+                    <ArrowRight size={18} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {paymentSuccess ? (
+              /* Success State */
+              <div className="fade-up" style={{ padding: 40, textAlign: 'center' }}>
+                <div style={{
+                  width: 72, height: 72, borderRadius: '50%', background: '#E6F7EF',
+                  margin: '0 auto 16px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <Check size={36} color="var(--success)" />
+                </div>
+                <h3 style={{ fontSize: 20, fontWeight: 900, color: 'var(--success)', marginBottom: 8 }}>
+                  تم الدفع بنجاح!
+                </h3>
+                <p style={{ fontSize: 14, color: 'var(--muted)' }}>
+                  تم تفعيل باقة {selectedTier.name} لحسابك
+                </p>
+              </div>
+            ) : (
+              <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
+                {/* Amount Display - High Visibility */}
+                <div style={{
+                  background: 'linear-gradient(135deg, #FFFBEB, #FEF3C7)',
+                  borderRadius: 16, padding: 20, textAlign: 'center',
+                  border: '2px solid var(--gold)',
+                }}>
+                  <p style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 700, marginBottom: 6 }}>المبلغ المطلوب</p>
+                  <p style={{
+                    fontSize: 42, fontWeight: 900, color: 'var(--gold)',
+                    fontFamily: "'JetBrains Mono', monospace",
+                    textShadow: '0 2px 8px rgba(200,149,42,.2)',
+                  }}>
+                    {formatPrice(selectedTier)}
+                  </p>
+                  <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+                    {isOutsideEgypt ? 'USD' : 'جنيه مصري'} / شهرياً
+                  </p>
+                </div>
+
+                {/* Payment Channels */}
+                <div>
+                  <p style={{ fontSize: 13, fontWeight: 800, color: 'var(--navy)', marginBottom: 12 }}>
+                    اختر طريقة الدفع
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {PAYMOB_CHANNELS.map((ch) => (
+                      <button
+                        key={ch.id}
+                        onClick={() => !processing && setSelectedChannel(ch.id)}
+                        disabled={processing}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 14,
+                          padding: '14px 16px', borderRadius: 14,
+                          border: selectedChannel === ch.id ? `2px solid ${ch.color}` : '1.5px solid var(--border)',
+                          background: selectedChannel === ch.id ? `${ch.color}08` : '#fff',
+                          cursor: processing ? 'not-allowed' : 'pointer',
+                          transition: 'all .2s', textAlign: 'right',
+                          opacity: processing ? 0.6 : 1,
+                        }}
+                      >
+                        <span style={{ fontSize: 28, flexShrink: 0 }}>{ch.icon}</span>
+                        <div style={{ flex: 1 }}>
+                          <p style={{ fontSize: 14, fontWeight: 800, color: 'var(--text)' }}>{ch.label}</p>
+                          <p style={{ fontSize: 12, color: 'var(--muted)' }}>{ch.desc}</p>
+                        </div>
+                        {selectedChannel === ch.id && (
+                          <div style={{
+                            width: 24, height: 24, borderRadius: '50%', background: ch.color,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                          }}>
+                            <Check size={14} color="#fff" />
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Security Notice */}
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '10px 14px', background: '#F5F8FF', borderRadius: 10,
+                }}>
+                  <Shield size={16} color="var(--navy)" />
+                  <div>
+                    <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--navy)' }}>دفع آمن ومشفر</p>
+                    <p style={{ fontSize: 10, color: 'var(--muted)' }}>جميع المعاملات محمية بـ SSL/TLS</p>
+                  </div>
+                </div>
+
+                {/* Pay Button */}
+                <Button
+                  variant="gold"
+                  fullWidth
+                  disabled={!selectedChannel || processing}
+                  onClick={processPayment}
+                  style={{
+                    padding: '16px 24px', fontSize: 16,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+                  }}
+                >
+                  {processing ? (
+                    <>
+                      <Spinner size={20} />
+                      <span>جاري الاتصال ببوابة سداد Paymob الآمنة...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Wallet size={18} />
+                      <span>ادفع {formatPrice(selectedTier)}</span>
+                    </>
+                  )}
+                </Button>
+
+                {/* Terms */}
+                <p style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center', lineHeight: 1.6 }}>
+                  بالضغط على "ادفع" فإنك توافق على شروط الاستخدام وسياسة الخصوصية.
+                  سيتم تفعيل الباقة فوراً بعد نجاح الدفع.
+                </p>
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
     </div>
   );
 }
