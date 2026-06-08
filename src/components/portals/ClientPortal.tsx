@@ -24,6 +24,17 @@ interface ChatMsg {
   time: string;
   isEmergency?: boolean;
   isSystem?: boolean;
+  attachment_url?: string;
+  attachment_type?: 'image' | 'video';
+}
+
+interface AppointmentRequest {
+  id: string;
+  status: 'pending' | 'accepted' | 'rejected' | 'rescheduled';
+  appointment_date: string;
+  appointment_time: string;
+  alternative_time?: string;
+  reason?: string;
 }
 
 interface CaseInfo {
@@ -136,9 +147,11 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
 
   /* Lawyer availability and payment credentials */
   const [availableDays, setAvailableDays] = useState<string[]>([]);
+  const [workHours, setWorkHours] = useState<{ from: string; to: string }>({ from: '09:00', to: '17:00' });
   const [lawyerPaymentInfo, setLawyerPaymentInfo] = useState<{
     vodafone_cash_number?: string;
     instapay_address?: string;
+    instapay_qr_url?: string;
     bank_account_details?: {
       iban?: string;
       bank_name?: string;
@@ -147,6 +160,15 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
       country?: string;
     };
   } | null>(null);
+
+  /* Appointment status tracking */
+  const [appointmentStatus, setAppointmentStatus] = useState<AppointmentRequest | null>(null);
+  const [showAppointmentStatus, setShowAppointmentStatus] = useState(false);
+
+  /* Draggable bottom sheet state */
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetY, setSheetY] = useState(0);
+  const sheetRef = useRef<HTMLDivElement>(null);
 
   const chatDropdownRef = useRef<HTMLDivElement>(null);
   const apptDropdownRef = useRef<HTMLDivElement>(null);
@@ -196,15 +218,31 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
         }
       });
 
-    // Fetch lawyer availability days
+    // Fetch lawyer availability days and work hours
     supabase.from('lawyer_availability')
-      .select('available_days')
+      .select('available_days, time_slots, notes')
       .eq('lawyer_id', lawyerId)
       .eq('is_active', true)
       .single()
       .then(({ data: availData }) => {
-        if (availData) setAvailableDays(availData.available_days || []);
+        if (availData) {
+          setAvailableDays(availData.available_days || []);
+          if (availData.time_slots?.length > 0) {
+            const sorted = [...availData.time_slots].sort();
+            setWorkHours({ from: sorted[0], to: sorted[sorted.length - 1] });
+          }
+        }
       });
+
+    // Fetch lawyer's QR code for InstaPay
+    supabase.storage.from('documents').list(`qr-codes/${lawyerId}`).then(({ data: qrData }) => {
+      if (qrData && qrData.length > 0) {
+        const { data: urlData } = supabase.storage.from('documents').getPublicUrl(`qr-codes/${lawyerId}/${qrData[0].name}`);
+        if (urlData?.publicUrl) {
+          setLawyerPaymentInfo((prev) => prev ? { ...prev, instapay_qr_url: urlData.publicUrl } : { instapay_qr_url: urlData.publicUrl });
+        }
+      }
+    });
 
     /* Aggregate all cases for this client by phone number */
     if (profile?.phone_number) {
@@ -220,6 +258,51 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
         });
     }
   }, [urlLawyerId, profile?.linked_lawyer_id, profile?.phone_number]);
+
+  /* REAL-TIME MESSAGES SUBSCRIPTION - Human chat */
+  useEffect(() => {
+    if (!selectedCase || activeChatTarget === 'bot') return;
+
+    const ch = supabase
+      .channel('messages:' + selectedCase.id)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `case_id=eq.${selectedCase.id}` }, (payload) => {
+        const msg = payload.new as any;
+        if (msg.sender_id !== user.id) {
+          setMsgs((prev) => [...prev, {
+            id: msg.id,
+            from: msg.sender_role === 'lawyer' ? 'lawyer' : 'staff',
+            text: msg.message_text,
+            time: new Date(msg.created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+            attachment_url: msg.attachment_url,
+            attachment_type: msg.attachment_type,
+          }]);
+        }
+      })
+      .subscribe();
+
+    return () => { ch.unsubscribe(); };
+  }, [selectedCase?.id, activeChatTarget, user.id]);
+
+  /* REAL-TIME APPOINTMENT STATUS SUBSCRIPTION */
+  useEffect(() => {
+    const ch = supabase
+      .channel('appointment_status:' + user.id)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'appointment_requests', filter: `client_id=eq.${user.id}` }, (payload) => {
+        const appt = payload.new as AppointmentRequest;
+        setAppointmentStatus(appt);
+        setShowAppointmentStatus(true);
+        if (appt.status === 'accepted') {
+          push('✅ تم قبول طلب الموعد!', 'success');
+        } else if (appt.status === 'rejected') {
+          push('❌ تم رفض طلب الموعد', 'danger');
+        } else if (appt.status === 'rescheduled') {
+          push(`📅 اقتراح موعد بديل: ${appt.alternative_time}`, 'warning');
+        }
+      })
+      .subscribe();
+
+    return () => { ch.unsubscribe(); };
+  }, [user.id, push]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [msgs]);
 
@@ -245,16 +328,31 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
     return 'مش فاهم سؤالك 😅\nجرب:\n• إرسال رقم القضية\n• اكتب "مواعيد" للمواعيد\n• اكتب "طوارئ" للمساعدة';
   };
 
-  const send = async () => {
-    if (!input.trim()) return;
+  const send = async (attachment?: File) => {
+    if (!input.trim() && !attachment) return;
     const { allowed } = checkFloodLimit();
     if (!allowed) { push('⚠️ إرسال سريع جداً! انتظر قليلاً', 'warning'); return; }
     const txt = input;
     const userMsgTime = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
-    setMsgs((p) => [...p, { id: 'u' + Date.now(), from: 'user', text: txt, time: userMsgTime }]);
+
+    let attachmentUrl: string | undefined;
+    let attachmentType: 'image' | 'video' | undefined;
+
+    // Handle file upload for human chat (not bot)
+    if (attachment && selectedCase && activeChatTarget !== 'bot') {
+      const path = `chat/${selectedCase.id}/${Date.now()}_${attachment.name}`;
+      const { error: uploadErr } = await supabase.storage.from('documents').upload(path, attachment);
+      if (!uploadErr) {
+        const { data } = supabase.storage.from('documents').getPublicUrl(path);
+        attachmentUrl = data?.publicUrl;
+        attachmentType = attachment.type.startsWith('image/') ? 'image' : attachment.type.startsWith('video/') ? 'video' : undefined;
+      }
+    }
+
+    setMsgs((p) => [...p, { id: 'u' + Date.now(), from: 'user', text: txt, time: userMsgTime, attachment_url: attachmentUrl, attachment_type: attachmentType }]);
     setInput('');
 
-    /* LOCAL BOT MODE: Process entirely locally, no DB insert */
+    /* LOCAL BOT MODE: Process entirely locally, no DB insert - TEXT ONLY */
     if (activeChatTarget === 'bot') {
       const reply = await botReply(txt);
       setTimeout(() => setMsgs((p) => [...p, { id: 'b' + Date.now(), from: 'bot', text: reply, time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) }]), 420);
@@ -263,8 +361,36 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
 
     /* REMOTE MODE: Insert to messages table for real-time chat with lawyer/staff */
     if (selectedCase) {
-      await supabase.from('messages').insert([{ case_id: selectedCase.id, sender_id: user.id, message_text: sanitize(txt) }]);
-      setMsgs((p) => [...p, { id: 's' + Date.now(), from: 'staff', staffName: activeChatLabel, text: 'تم إرسال رسالتك ✓', time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) }]);
+      await supabase.from('messages').insert([{
+        case_id: selectedCase.id,
+        sender_id: user.id,
+        sender_role: 'client',
+        message_text: sanitize(txt),
+        attachment_url: attachmentUrl,
+        attachment_type: attachmentType,
+      }]);
+    }
+  };
+
+  /* Generate Vodafone Cash USSD deep link */
+  const getVodafoneUSSD = (amount: number) => {
+    const vodafoneNumber = lawyerPaymentInfo?.vodafone_cash_number;
+    if (!vodafoneNumber) return null;
+    // USSD format: *9*7*NUMBER*AMOUNT#
+    const ussd = `*9*7*${vodafoneNumber.replace(/\D/g, '')}*${amount}%23`;
+    return `tel:${ussd}`;
+  };
+
+  /* Open InstaPay app */
+  const openInstaPay = () => {
+    window.location.href = 'instapay://';
+  };
+
+  /* Copy InstaPay ID */
+  const copyInstaPayId = () => {
+    if (lawyerPaymentInfo?.instapay_address) {
+      navigator.clipboard.writeText(lawyerPaymentInfo.instapay_address);
+      push('✓ تم نسخ معرف InstaPay', 'success');
     }
   };
 
@@ -435,6 +561,13 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
                 )}
                 <div className={chatClass} style={{ maxWidth: '80%', padding: '12px 16px', fontSize: 14, lineHeight: 1.8, whiteSpace: 'pre-line', direction: 'rtl' }}>
                   {msg.staffName && msg.from === 'staff' && <p style={{ fontSize: 10, fontWeight: 800, color: isEmergency || isSystem ? '#fff' : 'var(--gold)', marginBottom: 4 }}>{msg.staffName}</p>}
+                  {/* Render attachments for human chat */}
+                  {msg.attachment_url && msg.attachment_type === 'image' && (
+                    <img src={msg.attachment_url} alt="" style={{ maxWidth: '100%', borderRadius: 8, marginBottom: msg.text ? 8 : 0 }} />
+                  )}
+                  {msg.attachment_url && msg.attachment_type === 'video' && (
+                    <video src={msg.attachment_url} controls style={{ maxWidth: '100%', borderRadius: 8, marginBottom: msg.text ? 8 : 0 }} />
+                  )}
                   {msg.text}
                   <p style={{ fontSize: 9, marginTop: 6, opacity: isEmergency || isSystem ? 0.8 : 0.5, textAlign: 'left', fontFamily: "'JetBrains Mono', monospace" }}>{msg.time}</p>
                 </div>
@@ -445,8 +578,23 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
         </div>
 
         <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', display: 'flex', gap: 10, background: '#fff', paddingBottom: 'env(safe-area-inset-bottom, 12px)' }}>
+          {/* File attachment button - only for human chat */}
+          {activeChatTarget !== 'bot' && (
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 44, height: 44, background: '#F5F8FF', borderRadius: 12, cursor: 'pointer' }}>
+              <input
+                type="file"
+                accept="image/*,video/*"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) send(file);
+                }}
+                style={{ display: 'none' }}
+              />
+              <span style={{ fontSize: 20 }}>📷</span>
+            </label>
+          )}
           <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} placeholder={activeChatTarget === 'bot' ? 'اكتب سؤالك للمساعد...' : 'اكتب رسالتك...'} dir="rtl" maxLength={2000} style={{ flex: 1, padding: '12px 16px', border: '1.5px solid var(--border)', borderRadius: 12, fontSize: 14, fontFamily: "'Cairo',sans-serif", outline: 'none', background: '#FAFBFE' }} onFocus={(e) => { (e.currentTarget as HTMLInputElement).style.border = '1.5px solid var(--navy-mid)'; }} onBlur={(e) => { (e.currentTarget as HTMLInputElement).style.border = '1.5px solid var(--border)'; }} />
-          <Button onClick={send} style={{ padding: '12px 20px', minWidth: 56 }}><Send size={18} /></Button>
+          <Button onClick={() => send()} style={{ padding: '12px 20px', minWidth: 56 }}><Send size={18} /></Button>
         </div>
       </div>
     );
@@ -567,55 +715,116 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
           )}
         </Card>
 
-        {/* SIMPLIFIED BOOKING ENGINE */}
+        {/* UNIVERSAL APPOINTMENT BOOKING - Swipeable Bottom Sheet */}
         {selectedCase && (
-          <div ref={apptDropdownRef} style={{ position: 'relative' }}>
-            <Button variant="gold" fullWidth onClick={() => setShowApptDropdown((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center' }}>
+          <>
+            <Button variant="gold" fullWidth onClick={() => setSheetOpen(true)} style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center' }}>
               <Calendar size={16} /> {apptSubmitted ? `✓ تم إرسال الطلب` : 'حجز موعد'}
-              <ChevronDown size={12} />
             </Button>
 
-            {showApptDropdown && !apptSubmitted && (
-              <Card className="scale-in" style={{ position: 'absolute', top: '100%', right: 0, left: 0, zIndex: 50, marginTop: 6, padding: 16 }}>
-                <p style={{ fontSize: 13, fontWeight: 800, color: 'var(--navy)', marginBottom: 12 }}>اختر يوم ووقت الموعد</p>
-
-                {/* Day Selection */}
-                <div style={{ marginBottom: 12 }}>
-                  <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 6 }}>اليوم</p>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                    {(availableDays.length > 0 ? availableDays.map(dayId => DAYS_OF_WEEK.find(d => d.id === dayId)).filter(Boolean) : DAYS_OF_WEEK).map((day) => (
-                      <button key={day!.id} onClick={() => setSelectedDay(day!.id)} style={{ padding: '6px 12px', borderRadius: 8, border: selectedDay === day!.id ? '2px solid var(--navy)' : '1px solid var(--border)', background: selectedDay === day!.id ? '#F5F8FF' : '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 700, fontFamily: "'Cairo',sans-serif", transition: 'all .15s' }}>{day!.label}</button>
-                    ))}
+            {showAppointmentStatus && appointmentStatus && (
+              <div className="fade-up" style={{ padding: '14px 16px', borderRadius: 12, background: appointmentStatus.status === 'accepted' ? '#E6F7EF' : appointmentStatus.status === 'rejected' ? '#FDECEF' : '#FFFBEB', border: `1px solid ${appointmentStatus.status === 'accepted' ? '#22C55E' : appointmentStatus.status === 'rejected' ? '#EF4444' : '#F59E0B'}` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  {appointmentStatus.status === 'accepted' ? <span style={{ fontSize: 24 }}>✅</span> : appointmentStatus.status === 'rejected' ? <span style={{ fontSize: 24 }}>❌</span> : <span style={{ fontSize: 24 }}>📅</span>}
+                  <div style={{ flex: 1 }}>
+                    <p style={{ fontWeight: 800, fontSize: 14, color: appointmentStatus.status === 'accepted' ? '#22C55E' : appointmentStatus.status === 'rejected' ? '#EF4444' : '#F59E0B' }}>
+                      {appointmentStatus.status === 'accepted' ? 'تم قبول الموعد!' : appointmentStatus.status === 'rejected' ? 'تم رفض الموعد' : 'اقتراح موعد بديل'}
+                    </p>
+                    <p style={{ fontSize: 12, color: 'var(--muted)' }}>
+                      {appointmentStatus.alternative_time || `${appointmentStatus.appointment_date} • ${appointmentStatus.appointment_time}`}
+                    </p>
                   </div>
+                  <button onClick={() => setShowAppointmentStatus(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18 }}>×</button>
                 </div>
-
-                {/* Time Range Inputs */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
-                  <div>
-                    <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 6 }}>من الساعة</p>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', border: '1.5px solid var(--border)', borderRadius: 8, background: '#FAFBFE' }}>
-                      <Clock size={14} color="var(--muted)" />
-                      <input type="time" value={timeFrom} onChange={(e) => setTimeFrom(e.target.value)} style={{ flex: 1, border: 'none', background: 'transparent', fontSize: 13, fontFamily: "'JetBrains Mono', monospace", outline: 'none' }} />
-                    </div>
-                  </div>
-                  <div>
-                    <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 6 }}>إلى الساعة</p>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', border: '1.5px solid var(--border)', borderRadius: 8, background: '#FAFBFE' }}>
-                      <Clock size={14} color="var(--muted)" />
-                      <input type="time" value={timeTo} onChange={(e) => setTimeTo(e.target.value)} style={{ flex: 1, border: 'none', background: 'transparent', fontSize: 13, fontFamily: "'JetBrains Mono', monospace", outline: 'none' }} />
-                    </div>
-                  </div>
-                </div>
-
-                <Button fullWidth onClick={submitAppointment} disabled={!selectedDay}>
-                  {selectedDay ? `إرسال طلب الموعد` : 'اختر اليوم أولاً'}
-                </Button>
-              </Card>
+              </div>
             )}
+          </>
+        )}
+
+        {/* DRAGGABLE BOTTOM SHEET FOR APPOINTMENT */}
+        {sheetOpen && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 1000, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }} onClick={() => setSheetOpen(false)}>
+            <div
+              ref={sheetRef}
+              className="slide-up"
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                background: '#fff',
+                borderRadius: '20px 20px 0 0',
+                padding: '16px 20px 32px',
+                maxHeight: '85vh',
+                overflowY: 'auto',
+                boxShadow: '0 -8px 32px rgba(0,0,0,.15)',
+              }}
+            >
+              {/* Drag Handle */}
+              <div style={{ width: 40, height: 4, background: 'var(--border)', borderRadius: 2, margin: '0 auto 16px' }} />
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                <h3 style={{ fontSize: 18, fontWeight: 900, color: 'var(--navy)' }}>📅 حجز موعد</h3>
+                <button onClick={() => setSheetOpen(false)} style={{ background: 'var(--bg)', border: 'none', borderRadius: '50%', width: 32, height: 32, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
+              </div>
+
+              {/* Lawyer's working hours info */}
+              {availableDays.length > 0 && (
+                <div style={{ padding: '10px 14px', background: '#F5F8FF', borderRadius: 10, marginBottom: 16 }}>
+                  <p style={{ fontSize: 11, color: 'var(--muted)' }}>أيام العمل: {availableDays.map(d => DAYS_OF_WEEK.find(day => day.id === d)?.label).join(' • ')}</p>
+                  <p style={{ fontSize: 11, color: 'var(--muted)' }}>ساعات العمل: {workHours.from} - {workHours.to}</p>
+                </div>
+              )}
+
+              {/* Day Selection */}
+              <div style={{ marginBottom: 16 }}>
+                <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 10 }}>اختر اليوم</p>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {(availableDays.length > 0 ? availableDays : DAYS_OF_WEEK.map(d => d.id)).map((dayId) => {
+                    const day = DAYS_OF_WEEK.find(d => d.id === dayId);
+                    if (!day) return null;
+                    return (
+                      <button
+                        key={day.id}
+                        onClick={() => setSelectedDay(day.id)}
+                        style={{
+                          padding: '10px 16px', borderRadius: 99,
+                          border: selectedDay === day.id ? '2px solid var(--navy)' : '1px solid var(--border)',
+                          background: selectedDay === day.id ? 'var(--navy)' : '#fff',
+                          cursor: 'pointer', fontFamily: "'Cairo',sans-serif",
+                          transition: 'all .15s',
+                        }}
+                      >
+                        <span style={{ fontSize: 13, fontWeight: 700, color: selectedDay === day.id ? '#fff' : 'var(--text)' }}>{day.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Time Range */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
+                <div>
+                  <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>من الساعة</p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', background: '#F5F8FF', borderRadius: 10, border: '1.5px solid var(--border)' }}>
+                    <Clock size={16} color="var(--navy)" />
+                    <input type="time" value={timeFrom} onChange={(e) => setTimeFrom(e.target.value)} style={{ flex: 1, border: 'none', background: 'transparent', fontSize: 15, fontFamily: "'JetBrains Mono', monospace" }} />
+                  </div>
+                </div>
+                <div>
+                  <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>إلى الساعة</p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', background: '#F5F8FF', borderRadius: 10, border: '1.5px solid var(--border)' }}>
+                    <Clock size={16} color="var(--navy)" />
+                    <input type="time" value={timeTo} onChange={(e) => setTimeTo(e.target.value)} style={{ flex: 1, border: 'none', background: 'transparent', fontSize: 15, fontFamily: "'JetBrains Mono', monospace" }} />
+                  </div>
+                </div>
+              </div>
+
+              <Button variant="gold" fullWidth onClick={() => { submitAppointment(); setSheetOpen(false); }} disabled={!selectedDay} style={{ padding: '16px 24px', fontSize: 16 }}>
+                {selectedDay ? 'تأكيد الحجز' : 'اختر اليوم أولاً'}
+              </Button>
+            </div>
           </div>
         )}
 
-        {/* COLLAPSIBLE PAYMENT CREDENTIALS ACCORDION */}
+        {/* COLLAPSIBLE PAYMENT CREDENTIALS ACCORDION WITH DEEP LINKS */}
         {lawyerPaymentInfo && (lawyerPaymentInfo.vodafone_cash_number || lawyerPaymentInfo.instapay_address || lawyerPaymentInfo.bank_account_details) && (
           <details>
             <summary style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -623,37 +832,75 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
               <span>طرق الدفع والتحويل البديلة</span>
               <ChevronLeft size={14} style={{ marginRight: 'auto' }} />
             </summary>
-            <div className="details-content" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div className="details-content" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {/* Vodafone Cash with USSD deep link */}
               {lawyerPaymentInfo.vodafone_cash_number && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: '#FFF0F0', borderRadius: 10, border: '1px solid #FFE0E0' }}>
-                  <span style={{ fontSize: 18 }}>📱</span>
-                  <div style={{ flex: 1 }}>
-                    <p style={{ fontSize: 11, fontWeight: 700, color: '#E60000' }}>فودافون كاش</p>
-                    <p style={{ fontSize: 13, fontWeight: 900, color: 'var(--text)', fontFamily: "'JetBrains Mono', monospace", direction: 'ltr', textAlign: 'left' }}>{lawyerPaymentInfo.vodafone_cash_number}</p>
+                <div style={{ padding: '12px', background: '#FFF5F5', borderRadius: 12, border: '1px solid #FFE0E0' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                    <div style={{ width: 40, height: 40, borderRadius: 10, background: '#E60000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ color: '#fff', fontSize: 20 }}>📱</span></div>
+                    <div style={{ flex: 1 }}>
+                      <p style={{ fontSize: 13, fontWeight: 800, color: '#E60000' }}>فودافون كاش</p>
+                      <p style={{ fontSize: 11, color: 'var(--muted)' }}>اضغط للتحويل مباشرة</p>
+                    </div>
                   </div>
-                  <button onClick={() => { navigator.clipboard.writeText(lawyerPaymentInfo.vodafone_cash_number!); push('تم نسخ الرقم', 'success'); }} style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 4 }}><span style={{ fontSize: 14 }}>📋</span></button>
+                  <p style={{ fontSize: 14, fontWeight: 900, color: 'var(--text)', fontFamily: "'JetBrains Mono', monospace", direction: 'ltr', textAlign: 'center', marginBottom: 10 }}>{lawyerPaymentInfo.vodafone_cash_number}</p>
+                  {amountRemaining > 0 && (
+                    <a href={getVodafoneUSSD(amountRemaining)!} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, background: '#E60000', color: '#fff', padding: '12px 20px', borderRadius: 10, textDecoration: 'none', fontWeight: 800, fontSize: 14 }}>
+                      <Phone size={16} /> تحويل {amountRemaining.toLocaleString()} ج
+                    </a>
+                  )}
                 </div>
               )}
+
+              {/* InstaPay with QR and deep link */}
               {lawyerPaymentInfo.instapay_address && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: '#F0F8FF', borderRadius: 10, border: '1px solid #E0F0FF' }}>
-                  <span style={{ fontSize: 18 }}>💳</span>
-                  <div style={{ flex: 1 }}>
-                    <p style={{ fontSize: 11, fontWeight: 700, color: '#0066CC' }}>InstaPay</p>
-                    <p style={{ fontSize: 12, fontWeight: 900, color: 'var(--text)', fontFamily: "'JetBrains Mono', monospace", direction: 'ltr', textAlign: 'left' }}>{lawyerPaymentInfo.instapay_address}</p>
+                <div style={{ padding: '12px', background: '#F5F8FF', borderRadius: 12, border: '1px solid #E0E8FF' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                    <div style={{ width: 40, height: 40, borderRadius: 10, background: '#635BFF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ color: '#fff', fontSize: 20 }}>💳</span></div>
+                    <div style={{ flex: 1 }}>
+                      <p style={{ fontSize: 13, fontWeight: 800, color: '#635BFF' }}>InstaPay</p>
+                      <p style={{ fontSize: 11, color: 'var(--muted)' }}>نسخ المعرّف أو فتح التطبيق</p>
+                    </div>
                   </div>
-                  <button onClick={() => { navigator.clipboard.writeText(lawyerPaymentInfo.instapay_address!); push('تم نسخ العنوان', 'success'); }} style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 4 }}><span style={{ fontSize: 14 }}>📋</span></button>
+
+                  {/* QR Code Image */}
+                  {lawyerPaymentInfo.instapay_qr_url && (
+                    <div style={{ textAlign: 'center', marginBottom: 10 }}>
+                      <img src={lawyerPaymentInfo.instapay_qr_url} alt="InstaPay QR Code" style={{ width: 120, height: 120, borderRadius: 12, border: '2px solid #E0E8FF' }} />
+                    </div>
+                  )}
+
+                  <p style={{ fontSize: 12, fontWeight: 900, color: 'var(--text)', fontFamily: "'JetBrains Mono', monospace", direction: 'ltr', textAlign: 'center', marginBottom: 10 }}>{lawyerPaymentInfo.instapay_address}</p>
+
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button onClick={copyInstaPayId} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: '#E0E8FF', color: '#635BFF', padding: '10px 14px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12 }}>
+                      📋 نسخ المعرّف
+                    </button>
+                    <button onClick={openInstaPay} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: '#635BFF', color: '#fff', padding: '10px 14px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12 }}>
+                      🚀 فتح InstaPay
+                    </button>
+                  </div>
                 </div>
               )}
+
+              {/* Bank Account */}
               {lawyerPaymentInfo.bank_account_details && (lawyerPaymentInfo.bank_account_details.iban || lawyerPaymentInfo.bank_account_details.account_number) && (
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', background: '#F8FCF8', borderRadius: 10, border: '1px solid #E8F4E8' }}>
-                  <span style={{ fontSize: 18 }}>🏦</span>
-                  <div style={{ flex: 1 }}>
-                    <p style={{ fontSize: 11, fontWeight: 700, color: '#008800', marginBottom: 6 }}>تحويل بنكي</p>
-                    {lawyerPaymentInfo.bank_account_details.bank_name && <p style={{ fontSize: 11, color: 'var(--text)', marginBottom: 3 }}><span style={{ fontWeight: 700 }}>البنك:</span> {lawyerPaymentInfo.bank_account_details.bank_name}</p>}
-                    {lawyerPaymentInfo.bank_account_details.account_holder && <p style={{ fontSize: 11, color: 'var(--text)', marginBottom: 3 }}><span style={{ fontWeight: 700 }}>الحساب:</span> {lawyerPaymentInfo.bank_account_details.account_holder}</p>}
-                    {lawyerPaymentInfo.bank_account_details.iban && <p style={{ fontSize: 10, color: 'var(--text)', fontFamily: "'JetBrains Mono', monospace", direction: 'ltr', textAlign: 'left', marginBottom: 3 }}><span style={{ fontWeight: 700 }}>IBAN: </span>{lawyerPaymentInfo.bank_account_details.iban}</p>}
-                    {lawyerPaymentInfo.bank_account_details.account_number && <p style={{ fontSize: 10, color: 'var(--text)', fontFamily: "'JetBrains Mono', monospace", direction: 'ltr', textAlign: 'left' }}><span style={{ fontWeight: 700 }}>رقم: </span>{lawyerPaymentInfo.bank_account_details.account_number}</p>}
+                <div style={{ padding: '12px', background: '#F8FCF8', borderRadius: 12, border: '1px solid #E8F4E8' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                    <div style={{ width: 40, height: 40, borderRadius: 10, background: '#008800', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ color: '#fff', fontSize: 20 }}>🏦</span></div>
+                    <div style={{ flex: 1 }}>
+                      <p style={{ fontSize: 13, fontWeight: 800, color: '#008800' }}>تحويل بنكي</p>
+                      <p style={{ fontSize: 11, color: 'var(--muted)' }}>بيانات الحساب البنكي</p>
+                    </div>
                   </div>
+                  {lawyerPaymentInfo.bank_account_details.bank_name && <p style={{ fontSize: 12, color: 'var(--text)', marginBottom: 4 }}><span style={{ fontWeight: 700 }}>البنك:</span> {lawyerPaymentInfo.bank_account_details.bank_name}</p>}
+                  {lawyerPaymentInfo.bank_account_details.account_holder && <p style={{ fontSize: 12, color: 'var(--text)', marginBottom: 4 }}><span style={{ fontWeight: 700 }}>الحساب:</span> {lawyerPaymentInfo.bank_account_details.account_holder}</p>}
+                  {lawyerPaymentInfo.bank_account_details.iban && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
+                      <p style={{ flex: 1, fontSize: 10, color: 'var(--text)', fontFamily: "'JetBrains Mono', monospace", direction: 'ltr' }}>{lawyerPaymentInfo.bank_account_details.iban}</p>
+                      <button onClick={() => { navigator.clipboard.writeText(lawyerPaymentInfo.bank_account_details!.iban!); push('تم نسخ IBAN', 'success'); }} style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 4 }}><span style={{ fontSize: 14 }}>📋</span></button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

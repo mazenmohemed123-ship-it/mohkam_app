@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Scale, Mic, LogOut, ClipboardList, MessageSquare, User as UserIcon, Crown, Settings, FileText, Bell, Calculator, Lock, AlertTriangle, Calendar, Zap, Edit3, Clock, Plus, X, Check, Wallet, CreditCard, Phone } from 'lucide-react';
+import { Scale, Mic, LogOut, ClipboardList, MessageSquare, User as UserIcon, Crown, Settings, FileText, Bell, Calculator, Lock, AlertTriangle, Calendar, Zap, CreditCard as Edit3, Clock, Plus, X, Check, Wallet, CreditCard, Phone } from 'lucide-react';
 import { Button, Card, NotificationUI, Badge, Field } from '../atoms';
 import { CasesTable } from '../tables/CasesTable';
 import { CaseTimeline } from '../cases/CaseTimeline';
@@ -29,6 +29,7 @@ const WORKING_DAYS = [
   { id: 'tuesday', label: 'الثلاثاء' },
   { id: 'wednesday', label: 'الأربعاء' },
   { id: 'thursday', label: 'الخميس' },
+  { id: 'friday', label: 'الجمعة' },
 ];
 
 interface LawyerAvailabilityData {
@@ -55,18 +56,20 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
   const [emergencyEnabled, setEmergencyEnabled] = useState(initProfile.is_emergency_enabled ?? true);
   const [flashAlert, setFlashAlert] = useState<{ type: 'emergency' | 'appointment'; data: any } | null>(null);
 
-  // Availability state
+  // Availability state - simplified with work_from/work_to
   const [availability, setAvailability] = useState<LawyerAvailabilityData>({
     available_days: ['saturday', 'sunday', 'monday', 'tuesday', 'wednesday', 'thursday'],
     time_slots: ['09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00'],
     is_active: true,
   });
-  const [newTimeSlot, setNewTimeSlot] = useState('');
+  const [workFrom, setWorkFrom] = useState('09:00');
+  const [workTo, setWorkTo] = useState('17:00');
   const [savingAvailability, setSavingAvailability] = useState(false);
 
   // Payment credentials state
   const [vodafoneCash, setVodafoneCash] = useState(initProfile.vodafone_cash_number || '');
   const [instapayAddress, setInstapayAddress] = useState(initProfile.instapay_address || '');
+  const [instapayQRUrl, setInstapayQRUrl] = useState<string | null>(null);
   const [bankDetails, setBankDetails] = useState(initProfile.bank_account_details || {});
   const [savingPayment, setSavingPayment] = useState(false);
 
@@ -92,11 +95,23 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
       if (data) {
         setAvailability({
           available_days: data.available_days || ['saturday', 'sunday', 'monday', 'tuesday', 'wednesday', 'thursday'],
-          time_slots: data.time_slots || ['09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00'],
+          time_slots: data.time_slots || [],
           is_active: data.is_active ?? true,
           id: data.id,
           lawyer_id: data.lawyer_id,
         });
+        // Extract work hours from time_slots
+        if (data.time_slots?.length > 0) {
+          const sorted = [...data.time_slots].sort();
+          setWorkFrom(sorted[0] || '09:00');
+          setWorkTo(sorted[sorted.length - 1] || '17:00');
+        }
+      }
+      // Load QR code from storage
+      const { data: qrData } = await supabase.storage.from('documents').list(`qr-codes/${user.id}`);
+      if (qrData && qrData.length > 0) {
+        const { data: urlData } = supabase.storage.from('documents').getPublicUrl(`qr-codes/${user.id}/${qrData[0].name}`);
+        if (urlData?.publicUrl) setInstapayQRUrl(urlData.publicUrl);
       }
     };
     loadAvailabilityData();
@@ -130,7 +145,7 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
     return () => { ch.unsubscribe(); };
   }, [user.id, push]);
 
-  // Real-time subscription for appointment requests
+  // Real-time subscription for appointment requests with sound alert
   useEffect(() => {
     const ch = supabase
       .channel('appointments_alerts:' + user.id)
@@ -140,12 +155,40 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
           setPendingAppointments((prev) => [appt, ...prev]);
           setFlashAlert({ type: 'appointment', data: appt });
           push(`📅 طلب موعد جديد: ${appt.appointment_date}`, 'warning');
-          setTimeout(() => setFlashAlert(null), 8000);
+          // Play notification sound
+          try {
+            const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2teleQwAPLHd+ZdxOQA4qt/7oHEsADu08vufWSgAN67p/KlcFgA0p+n6s10AADGi4/qjUgAIX5zc9qVJAP9YfNj0oUkA/1Z52fOkSwD/WoXS8qRQAP9fg9PxolEA/1qB0/GmVQD/YIDS86dWAP9cgNLwpVYA/1d/0vCmVwD/V3/S8KZZAP9YfNLwp1kA/1h80vCnWQD/WH3S8KdZAP9YfNLwp1kA/1h80vCnWQD//w==');
+            audio.volume = 0.8;
+            audio.play().catch(() => {});
+          } catch {}
+          setTimeout(() => setFlashAlert(null), 15000);
         }
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'appointment_requests', filter: `lawyer_id=eq.${user.id}` }, (payload) => {
+        loadAppointments(user.id);
       })
       .subscribe();
     return () => { ch.unsubscribe(); };
-  }, [user.id, push]);
+  }, [user.id, push, loadAppointments]);
+
+  // Handle appointment approval
+  const handleAppointmentAction = async (apptId: string, action: 'accepted' | 'rejected' | 'rescheduled', alternativeTime?: string) => {
+    const { error } = await supabase
+      .from('appointment_requests')
+      .update({
+        status: action,
+        alternative_time: alternativeTime || null,
+        responded_by: user.id,
+        responded_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', apptId);
+
+    if (!error) {
+      setPendingAppointments((prev) => prev.filter((a) => a.id !== apptId));
+      push(action === 'accepted' ? '✓ تم قبول الموعد' : action === 'rejected' ? 'تم رفض الموعد' : 'تم اقتراح موعد بديل', action === 'accepted' ? 'success' : 'warning');
+    }
+  };
 
   useEffect(() => {
     setPendingAppointments(appointments.filter((a) => a.status === 'pending'));
@@ -215,47 +258,64 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
     }
   };
 
-  const toggleDay = (dayId: string) => {
-    setAvailability((prev) => ({
-      ...prev,
-      available_days: prev.available_days.includes(dayId)
-        ? prev.available_days.filter((d) => d !== dayId)
-        : [...prev.available_days, dayId],
-    }));
+  const toggleDay = async (dayId: string) => {
+    const newDays = availability.available_days.includes(dayId)
+      ? availability.available_days.filter((d) => d !== dayId)
+      : [...availability.available_days, dayId];
+    setAvailability((prev) => ({ ...prev, available_days: newDays }));
+
+    // Instant save to database
+    await supabase
+      .from('lawyer_availability')
+      .upsert({
+        lawyer_id: user.id,
+        available_days: newDays,
+        time_slots: generateTimeSlots(workFrom, workTo),
+        is_active: availability.is_active,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'lawyer_id' });
   };
 
-  const addTimeSlot = () => {
-    if (newTimeSlot && !availability.time_slots.includes(newTimeSlot)) {
-      const sorted = [...availability.time_slots, newTimeSlot].sort();
-      setAvailability((prev) => ({ ...prev, time_slots: sorted }));
-      setNewTimeSlot('');
+  const generateTimeSlots = (from: string, to: string) => {
+    const slots: string[] = [];
+    const [fromH] = from.split(':').map(Number);
+    const [toH] = to.split(':').map(Number);
+    for (let h = fromH; h <= toH; h++) {
+      slots.push(`${h.toString().padStart(2, '0')}:00`);
     }
-  };
-
-  const removeTimeSlot = (slot: string) => {
-    setAvailability((prev) => ({
-      ...prev,
-      time_slots: prev.time_slots.filter((s) => s !== slot),
-    }));
+    return slots;
   };
 
   const saveAvailability = async () => {
     setSavingAvailability(true);
+    const timeSlots = generateTimeSlots(workFrom, workTo);
     const { error } = await supabase
       .from('lawyer_availability')
       .upsert({
         lawyer_id: user.id,
         available_days: availability.available_days,
-        time_slots: availability.time_slots,
+        time_slots: timeSlots,
         is_active: availability.is_active,
+        notes: `${workFrom} - ${workTo}`,
         updated_at: new Date().toISOString(),
       }, { onConflict: 'lawyer_id' });
     if (!error) {
+      setAvailability((prev) => ({ ...prev, time_slots: timeSlots }));
       push('✓ تم حفظ جدول العمل', 'success');
     } else {
       push('خطأ في حفظ الجدول', 'danger');
     }
     setSavingAvailability(false);
+  };
+
+  const uploadQRCode = async (file: File) => {
+    const path = `qr-codes/${user.id}/${Date.now()}_${file.name}`;
+    const { error } = await supabase.storage.from('documents').upload(path, file, { upsert: true });
+    if (!error) {
+      const { data } = supabase.storage.from('documents').getPublicUrl(path);
+      if (data?.publicUrl) setInstapayQRUrl(data.publicUrl);
+      push('✓ تم رفع صورة QR', 'success');
+    }
   };
 
   const savePaymentCredentials = async () => {
@@ -305,7 +365,7 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
     <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column' }}>
       <NotificationUI list={notifList} />
 
-      {flashAlert && emergencyEnabled && (
+      {flashAlert && (
         <div className="flash-pulse" style={{
           position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
           background: flashAlert.type === 'emergency'
@@ -333,10 +393,12 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
               <div style={{ flex: 1 }}>
                 <p style={{ fontWeight: 900, fontSize: 15 }}>📅 طلب موعد جديد!</p>
                 <p style={{ fontSize: 12, opacity: 0.9 }}>
-                  {flashAlert.data.appointment_date} | {flashAlert.data.reason?.slice(0, 40)}...
+                  {flashAlert.data.appointment_date} | {flashAlert.data.appointment_time} | {flashAlert.data.reason?.slice(0, 30)}...
                 </p>
               </div>
-              <Badge style={{ background: 'rgba(255,255,255,.25)', color: '#fff', border: 'none' }}>معلق</Badge>
+              {/* Accept/Reject buttons for appointments */}
+              <button onClick={() => handleAppointmentAction(flashAlert.data.id, 'accepted')} style={{ background: '#22C55E', border: 'none', color: '#fff', padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 14, fontWeight: 900, display: 'flex', alignItems: 'center', gap: 4 }}>✓ صح</button>
+              <button onClick={() => handleAppointmentAction(flashAlert.data.id, 'rejected')} style={{ background: '#EF4444', border: 'none', color: '#fff', padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 14, fontWeight: 900, display: 'flex', alignItems: 'center', gap: 4 }}>✕ خطأ</button>
             </>
           )}
           <button onClick={() => setFlashAlert(null)} style={{
@@ -603,155 +665,158 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
               </h3>
               <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>حدد الأيام والساعات المتاحة لحجز المواعيد</p>
 
-              {/* Working Days */}
+              {/* Work Hours - Simplified */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+                <div>
+                  <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 6 }}>من الساعة</p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: '#F5F8FF', borderRadius: 10, border: '1.5px solid var(--border)' }}>
+                    <Clock size={14} color="var(--navy)" />
+                    <input type="time" value={workFrom} onChange={(e) => setWorkFrom(e.target.value)} onBlur={saveAvailability} style={{ flex: 1, border: 'none', background: 'transparent', fontSize: 14, fontFamily: "'JetBrains Mono', monospace" }} />
+                  </div>
+                </div>
+                <div>
+                  <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 6 }}>إلى الساعة</p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: '#F5F8FF', borderRadius: 10, border: '1.5px solid var(--border)' }}>
+                    <Clock size={14} color="var(--navy)" />
+                    <input type="time" value={workTo} onChange={(e) => setWorkTo(e.target.value)} onBlur={saveAvailability} style={{ flex: 1, border: 'none', background: 'transparent', fontSize: 14, fontFamily: "'JetBrains Mono', monospace" }} />
+                  </div>
+                </div>
+              </div>
+
+              {/* Working Days Chips */}
               <div style={{ marginBottom: 16 }}>
                 <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 8 }}>الأيام المتاحة</p>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {WORKING_DAYS.map((day) => (
-                    <button
-                      key={day.id}
-                      onClick={() => toggleDay(day.id)}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 6,
-                        padding: '8px 14px', borderRadius: 8,
-                        border: availability.available_days.includes(day.id) ? '2px solid var(--navy)' : '1px solid var(--border)',
-                        background: availability.available_days.includes(day.id) ? '#F5F8FF' : '#fff',
-                        cursor: 'pointer', transition: 'all .15s',
-                        fontFamily: "'Cairo',sans-serif",
-                      }}
-                    >
-                      {availability.available_days.includes(day.id) && <Check size={12} color="var(--navy)" />}
-                      <span style={{ fontSize: 12, fontWeight: 700, color: availability.available_days.includes(day.id) ? 'var(--navy)' : 'var(--muted)' }}>{day.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Time Slots */}
-              <div style={{ marginBottom: 16 }}>
-                <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 8 }}>الساعات المتاحة</p>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-                  {availability.time_slots.map((slot) => (
-                    <div key={slot} style={{
-                      display: 'flex', alignItems: 'center', gap: 4,
-                      padding: '6px 10px', borderRadius: 6,
-                      background: 'var(--navy)', color: '#fff',
-                      fontFamily: "'JetBrains Mono', monospace",
-                      fontSize: 11, fontWeight: 600,
-                    }}>
-                      {slot}
+                  {WORKING_DAYS.map((day) => {
+                    const isActive = availability.available_days.includes(day.id);
+                    return (
                       <button
-                        onClick={() => removeTimeSlot(slot)}
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', color: '#fff' }}
+                        key={day.id}
+                        onClick={() => toggleDay(day.id)}
+                        style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                          padding: '8px 16px', borderRadius: 99,
+                          border: isActive ? '2px solid var(--navy)' : '1px solid var(--border)',
+                          background: isActive ? 'var(--navy)' : '#fff',
+                          cursor: 'pointer', transition: 'all .15s',
+                          fontFamily: "'Cairo',sans-serif",
+                          minWidth: 70,
+                        }}
                       >
-                        <X size={12} />
+                        <span style={{ fontSize: 12, fontWeight: 700, color: isActive ? '#fff' : 'var(--muted)' }}>{day.label}</span>
                       </button>
-                    </div>
-                  ))}
-                </div>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <input
-                    type="time"
-                    value={newTimeSlot}
-                    onChange={(e) => setNewTimeSlot(e.target.value)}
-                    style={{
-                      padding: '8px 12px', border: '1.5px solid var(--border)',
-                      borderRadius: 8, fontSize: 12, fontFamily: "'JetBrains Mono', monospace",
-                    }}
-                  />
-                  <Button size="sm" variant="secondary" onClick={addTimeSlot} disabled={!newTimeSlot}>
-                    <Plus size={12} /> إضافة
-                  </Button>
+                    );
+                  })}
                 </div>
               </div>
 
-              <Button fullWidth onClick={saveAvailability} disabled={savingAvailability}>
-                {savingAvailability ? 'جاري الحفظ...' : 'حفظ جدول العمل'}
-              </Button>
+              <p style={{ fontSize: 10, color: 'var(--success)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                <Check size={12} /> يتم الحفظ تلقائياً عند أي تغيير
+              </p>
             </Card>
 
             {/* Payment Credentials */}
             <Card style={{ padding: 22 }}>
               <h3 style={{ fontWeight: 800, marginBottom: 14, color: 'var(--navy)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Wallet size={18} /> بيانات الدفع والتحويل
+                <Wallet size={18} /> بيانات الدفع البديلة
               </h3>
-              <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 16 }}>أضف بياناتك ليتمكن الموكلون من التحويل إليك</p>
+              <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 16 }}>أضف بياناتك ليتمكن الموكلون من التحويل إليك مباشرة</p>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px', background: '#F5F8FF', borderRadius: 10 }}>
-                  <Phone size={16} color="#E60000" />
-                  <div style={{ flex: 1 }}>
-                    <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 4 }}>فودافون كاش</p>
-                    <input
-                      type="tel"
-                      value={vodafoneCash}
-                      onChange={(e) => setVodafoneCash(e.target.value)}
-                      placeholder="رقم المحفظة"
-                      style={{
-                        width: '100%', padding: '8px 12px',
-                        border: '1.5px solid var(--border)', borderRadius: 8,
-                        fontSize: 13, fontFamily: "'Cairo',sans-serif",
-                      }}
-                    />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {/* Vodafone Cash */}
+                <div style={{ padding: '14px', background: '#FFF5F5', borderRadius: 12, border: '1px solid #FFE0E0' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 8, background: '#E60000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ color: '#fff', fontSize: 16 }}>📱</span></div>
+                    <div style={{ flex: 1 }}><p style={{ fontSize: 13, fontWeight: 800, color: '#E60000' }}>فودافون كاش</p><p style={{ fontSize: 10, color: 'var(--muted)' }}>رقم المحفظة</p></div>
+                  </div>
+                  <input
+                    type="tel"
+                    value={vodafoneCash}
+                    onChange={(e) => setVodafoneCash(e.target.value)}
+                    placeholder="01xxxxxxxxx"
+                    style={{
+                      width: '100%', padding: '10px 14px',
+                      border: '1.5px solid var(--border)', borderRadius: 10,
+                      fontSize: 14, fontFamily: "'JetBrains Mono', monospace",
+                      direction: 'ltr', textAlign: 'left',
+                    }}
+                  />
+                </div>
+
+                {/* InstaPay */}
+                <div style={{ padding: '14px', background: '#F5F8FF', borderRadius: 12, border: '1px solid #E0E8FF' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 8, background: '#635BFF', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ color: '#fff', fontSize: 16 }}>💳</span></div>
+                    <div style={{ flex: 1 }}><p style={{ fontSize: 13, fontWeight: 800, color: '#635BFF' }}>InstaPay</p><p style={{ fontSize: 10, color: 'var(--muted)' }}>عنوان أو معرّف InstaPay</p></div>
+                  </div>
+                  <input
+                    type="text"
+                    value={instapayAddress}
+                    onChange={(e) => setInstapayAddress(e.target.value)}
+                    placeholder="username@instapay"
+                    style={{
+                      width: '100%', padding: '10px 14px',
+                      border: '1.5px solid var(--border)', borderRadius: 10,
+                      fontSize: 13, fontFamily: "'JetBrains Mono', monospace",
+                      direction: 'ltr', textAlign: 'left', marginBottom: 10,
+                    }}
+                  />
+                  {/* QR Code Upload */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    {instapayQRUrl && (
+                      <img src={instapayQRUrl} alt="QR Code" style={{ width: 60, height: 60, borderRadius: 8, objectFit: 'cover', border: '1px solid var(--border)' }} />
+                    )}
+                    <label style={{ flex: 1, cursor: 'pointer' }}>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) uploadQRCode(file);
+                        }}
+                        style={{ display: 'none' }}
+                      />
+                      <div style={{ padding: '10px 14px', background: '#E0E8FF', borderRadius: 8, textAlign: 'center' }}>
+                        <p style={{ fontSize: 11, fontWeight: 700, color: '#635BFF' }}>{instapayQRUrl ? '📷 تغيير صورة QR' : '📷 رفع صورة QR'}</p>
+                        <p style={{ fontSize: 9, color: 'var(--muted)' }}>التقط صورة لـ QR Code من InstaPay</p>
+                      </div>
+                    </label>
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px', background: '#F5F8FF', borderRadius: 10 }}>
-                  <CreditCard size={16} color="#635BFF" />
-                  <div style={{ flex: 1 }}>
-                    <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 4 }}>InstaPay</p>
-                    <input
-                      type="text"
-                      value={instapayAddress}
-                      onChange={(e) => setInstapayAddress(e.target.value)}
-                      placeholder="عنوان InstaPay"
-                      style={{
-                        width: '100%', padding: '8px 12px',
-                        border: '1.5px solid var(--border)', borderRadius: 8,
-                        fontSize: 13, fontFamily: "'Cairo',sans-serif",
-                      }}
-                    />
+                {/* Bank Account */}
+                <div style={{ padding: '14px', background: '#F8FCF8', borderRadius: 12, border: '1px solid #E8F4E8' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 8, background: '#008800', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ color: '#fff', fontSize: 16 }}>🏦</span></div>
+                    <div style={{ flex: 1 }}><p style={{ fontSize: 13, fontWeight: 800, color: '#008800' }}>الحساب البنكي</p><p style={{ fontSize: 10, color: 'var(--muted)' }}>بيانات التحويل البنكي</p></div>
                   </div>
-                </div>
-
-                <div style={{ padding: '12px', background: '#F5F8FF', borderRadius: 10 }}>
-                  <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 8 }}>الحساب البنكي / IBAN</p>
                   <div style={{ display: 'grid', gap: 8 }}>
                     <input
                       type="text"
                       value={bankDetails.iban || ''}
                       onChange={(e) => setBankDetails((p) => ({ ...p, iban: e.target.value }))}
-                      placeholder="رقم IBAN"
-                      style={{
-                        padding: '8px 12px', border: '1.5px solid var(--border)',
-                        borderRadius: 8, fontSize: 12, fontFamily: "'JetBrains Mono', monospace",
-                      }}
+                      placeholder="IBAN"
+                      style={{ padding: '10px 14px', border: '1.5px solid var(--border)', borderRadius: 10, fontSize: 12, fontFamily: "'JetBrains Mono', monospace", direction: 'ltr', textAlign: 'left' }}
                     />
                     <input
                       type="text"
                       value={bankDetails.bank_name || ''}
                       onChange={(e) => setBankDetails((p) => ({ ...p, bank_name: e.target.value }))}
                       placeholder="اسم البنك"
-                      style={{
-                        padding: '8px 12px', border: '1.5px solid var(--border)',
-                        borderRadius: 8, fontSize: 13, fontFamily: "'Cairo',sans-serif",
-                      }}
+                      style={{ padding: '10px 14px', border: '1.5px solid var(--border)', borderRadius: 10, fontSize: 13, fontFamily: "'Cairo',sans-serif" }}
                     />
                     <input
                       type="text"
                       value={bankDetails.account_holder || ''}
                       onChange={(e) => setBankDetails((p) => ({ ...p, account_holder: e.target.value }))}
                       placeholder="اسم صاحب الحساب"
-                      style={{
-                        padding: '8px 12px', border: '1.5px solid var(--border)',
-                        borderRadius: 8, fontSize: 13, fontFamily: "'Cairo',sans-serif",
-                      }}
+                      style={{ padding: '10px 14px', border: '1.5px solid var(--border)', borderRadius: 10, fontSize: 13, fontFamily: "'Cairo',sans-serif" }}
                     />
                   </div>
                 </div>
               </div>
 
-              <Button fullWidth onClick={savePaymentCredentials} disabled={savingPayment} style={{ marginTop: 12 }}>
+              <Button fullWidth onClick={savePaymentCredentials} disabled={savingPayment} style={{ marginTop: 16 }}>
                 {savingPayment ? 'جاري الحفظ...' : 'حفظ بيانات الدفع'}
               </Button>
             </Card>
