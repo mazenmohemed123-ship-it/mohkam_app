@@ -75,6 +75,7 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
   const [vodafoneCash, setVodafoneCash] = useState(initProfile.vodafone_cash_number || '');
   const [instapayAddress, setInstapayAddress] = useState(initProfile.instapay_address || '');
   const [instapayQRUrl, setInstapayQRUrl] = useState<string | null>(null);
+  const [instapayQRPreview, setInstapayQRPreview] = useState<string | null>(null); // Local preview before upload
   const [bankDetails, setBankDetails] = useState(initProfile.bank_account_details || {});
   const [savingPayment, setSavingPayment] = useState(false);
 
@@ -744,9 +745,22 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
               </h3>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                 <Button variant="secondary" fullWidth onClick={async () => {
-                  const token = await registerPush(user.id);
-                  if (token) push('✓ تم تفعيل الإشعارات', 'success');
-                  else push('تعذّر تفعيل الإشعارات', 'warning');
+                  // Request browser notification permission
+                  if ('Notification' in window) {
+                    const permission = await Notification.requestPermission();
+                    if (permission === 'granted') {
+                      const token = await registerPush(user.id);
+                      if (token) {
+                        push('✓ تم تفعيل الإشعارات', 'success');
+                      } else {
+                        push('تعذّر تسجيل الإشعارات', 'warning');
+                      }
+                    } else {
+                      push('تم رفض إذن الإشعارات', 'warning');
+                    }
+                  } else {
+                    push('المتصفح لا يدعم الإشعارات', 'warning');
+                  }
                 }}>🔔 تفعيل الإشعارات</Button>
 
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#F5F8FF', borderRadius: 10 }}>
@@ -878,8 +892,8 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
                   />
                   {/* QR Code Upload */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    {instapayQRUrl && (
-                      <img src={instapayQRUrl} alt="QR Code" style={{ width: 60, height: 60, borderRadius: 8, objectFit: 'cover', border: '1px solid var(--border)' }} />
+                    {(instapayQRPreview || instapayQRUrl) && (
+                      <img src={instapayQRPreview || instapayQRUrl!} alt="QR Code" style={{ width: 60, height: 60, borderRadius: 8, objectFit: 'cover', border: '1px solid var(--border)' }} />
                     )}
                     <label style={{ flex: 1, cursor: 'pointer' }}>
                       <input
@@ -887,12 +901,18 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
                         accept="image/*"
                         onChange={(e) => {
                           const file = e.target.files?.[0];
-                          if (file) uploadQRCode(file);
+                          if (file) {
+                            // Show local preview immediately
+                            const previewUrl = URL.createObjectURL(file);
+                            setInstapayQRPreview(previewUrl);
+                            // Then upload to storage
+                            uploadQRCode(file);
+                          }
                         }}
                         style={{ display: 'none' }}
                       />
                       <div style={{ padding: '10px 14px', background: '#E0E8FF', borderRadius: 8, textAlign: 'center' }}>
-                        <p style={{ fontSize: 11, fontWeight: 700, color: '#635BFF' }}>{instapayQRUrl ? '📷 تغيير صورة QR' : '📷 رفع صورة QR'}</p>
+                        <p style={{ fontSize: 11, fontWeight: 700, color: '#635BFF' }}>{instapayQRUrl || instapayQRPreview ? '📷 تغيير صورة QR' : '📷 رفع صورة QR'}</p>
                         <p style={{ fontSize: 9, color: 'var(--muted)' }}>التقط صورة لـ QR Code من InstaPay</p>
                       </div>
                     </label>
@@ -934,6 +954,44 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
               <Button fullWidth onClick={savePaymentCredentials} disabled={savingPayment} style={{ marginTop: 16 }}>
                 {savingPayment ? 'جاري الحفظ...' : 'حفظ بيانات الدفع'}
               </Button>
+            </Card>
+
+            {/* Auto-Renewal Toggle */}
+            <Card style={{ padding: 22 }}>
+              <h3 style={{ fontWeight: 800, marginBottom: 14, color: 'var(--navy)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Zap size={18} /> التجديد التلقائي للباقة
+              </h3>
+              <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 16 }}>
+                عند التفعيل، سيتم تجديد الباقة تلقائياً شهرياً باستخدام طريقة الدفع المحفوظة
+              </p>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#F5F8FF', borderRadius: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Zap size={16} color={(profile as any).is_auto_renew_enabled ? 'var(--success)' : 'var(--muted)'} />
+                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>التجديد التلقائي</span>
+                </div>
+                <button
+                  onClick={async () => {
+                    const newValue = !(profile as any).is_auto_renew_enabled;
+                    const { error } = await supabase.from('profiles').update({ is_auto_renew_enabled: newValue }).eq('id', user.id);
+                    if (!error) {
+                      setProfile((p) => p ? { ...p, is_auto_renew_enabled: newValue } : p);
+                      push(newValue ? '✓ تم تفعيل التجديد التلقائي' : 'تم إيقاف التجديد التلقائي', 'success');
+                    }
+                  }}
+                  style={{
+                    width: 48, height: 26, borderRadius: 99, border: 'none', cursor: 'pointer',
+                    background: (profile as any).is_auto_renew_enabled ? 'var(--success)' : 'var(--border)', transition: 'background .2s',
+                    position: 'relative',
+                  }}
+                >
+                  <div style={{
+                    width: 20, height: 20, borderRadius: '50%', background: '#fff',
+                    position: 'absolute', top: 3, transition: 'right .2s',
+                    right: (profile as any).is_auto_renew_enabled ? 3 : 25,
+                    boxShadow: '0 1px 4px rgba(0,0,0,.2)',
+                  }} />
+                </button>
+              </div>
             </Card>
 
             {/* Invite Links */}

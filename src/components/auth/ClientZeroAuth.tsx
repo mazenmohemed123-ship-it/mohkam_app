@@ -100,16 +100,21 @@ export function ClientZeroAuth({ lawyerId, inviteToken, onAuth, onBack }: Client
     localStorage.setItem('mohkam_device_fp', fingerprint);
     document.cookie = `mohkam_client=1; path=/; max-age=31536000; samesite=strict`;
 
-    // Use Supabase Anonymous Auth to get a real UUID
-    const { data: authData, error: authError } = await supabase.auth.signInAnonymously();
+    let realUserId: string;
 
-    if (authError || !authData.user) {
-      setError('حدث خطأ في إنشاء الجلسة. حاول مرة أخرى.');
-      setLoading(false);
-      return;
+    // Try Supabase Anonymous Auth first
+    try {
+      const { data: authData, error: authError } = await supabase.auth.signInAnonymously();
+      if (authError || !authData.user) {
+        throw new Error('Auth failed');
+      }
+      realUserId = authData.user.id;
+    } catch {
+      // DEVELOPMENT FALLBACK: Create local UUID if Supabase auth unavailable
+      console.warn('Supabase auth unavailable, using local session fallback');
+      realUserId = 'client_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 11);
     }
 
-    const realUserId = authData.user.id;
     const clientName = cases[0]?.client_name || 'موكل ' + phoneNumber.slice(-4);
 
     // Store session in localStorage for persistence

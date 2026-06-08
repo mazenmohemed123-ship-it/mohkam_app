@@ -138,6 +138,7 @@ export function SubScreen({ profile, onUpdateProfile, push, caseCount = 0 }: Sub
   const [selectedTier, setSelectedTier] = useState<TierInfo | null>(null);
   const [processing, setProcessing] = useState(false);
   const [paymentSuccess, setPaymentSuccess] = useState(false);
+  const [autoRenew, setAutoRenew] = useState(true); // Default to enabled
 
   /* Cardholder form state */
   const [cardName, setCardName] = useState('');
@@ -205,6 +206,7 @@ export function SubScreen({ profile, onUpdateProfile, push, caseCount = 0 }: Sub
         tier: selectedTier.id,
         started_at: new Date().toISOString(),
         expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        is_auto_renew_enabled: autoRenew,
       }).eq('id', profile.id);
 
       if (updateError) throw updateError;
@@ -344,10 +346,10 @@ export function SubScreen({ profile, onUpdateProfile, push, caseCount = 0 }: Sub
         })}
       </div>
 
-      {/* ==================== CHECKOUT MODAL ==================== */}
+      {/* ==================== CHECKOUT MODAL - Mobile Responsive ==================== */}
       {showCheckout && selectedTier && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,20,60,.85)', backdropFilter: 'blur(8px)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-          <Card className="slide-up" style={{ width: '100%', maxWidth: 440, overflow: 'hidden' }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,20,60,.85)', backdropFilter: 'blur(8px)', zIndex: 1000, display: 'flex', alignItems: 'flex-end', justifyContent: 'center', padding: '8px', '@media (min-width: 640px)': { alignItems: 'center', padding: 16 } }}>
+          <Card className="slide-up" style={{ width: '100%', maxWidth: '100%', overflow: 'hidden', maxHeight: 'calc(100vh - 16px)', overflowY: 'auto', borderRadius: '20px 20px 0 0', '@media (min-width: 640px)': { maxWidth: 440, borderRadius: 16, maxHeight: '90vh' } }}>
             {/* Header */}
             <div style={{ background: 'linear-gradient(135deg, var(--navy), var(--navy-light))', padding: '18px 20px', color: '#fff' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -418,6 +420,28 @@ export function SubScreen({ profile, onUpdateProfile, push, caseCount = 0 }: Sub
                       style={{ padding: '12px 14px', border: '1.5px solid var(--border)', borderRadius: 10, fontSize: 13, fontFamily: "'JetBrains Mono', monospace" }}
                     />
                   </div>
+                </div>
+
+                {/* Auto-Renewal Toggle */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: '#F5F8FF', borderRadius: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Zap size={14} color={autoRenew ? 'var(--success)' : 'var(--muted)'} />
+                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)' }}>{lang === 'ar' ? 'التجديد التلقائي للباقة' : 'Auto-renew subscription'}</span>
+                  </div>
+                  <button
+                    onClick={() => setAutoRenew(!autoRenew)}
+                    style={{
+                      width: 44, height: 24, borderRadius: 99, border: 'none', cursor: 'pointer',
+                      background: autoRenew ? 'var(--success)' : 'var(--border)', transition: 'background .2s', position: 'relative',
+                    }}
+                  >
+                    <div style={{
+                      width: 18, height: 18, borderRadius: '50%', background: '#fff',
+                      position: 'absolute', top: 3, transition: 'right .2s',
+                      right: autoRenew ? 3 : 23,
+                      boxShadow: '0 1px 4px rgba(0,0,0,.2)',
+                    }} />
+                  </button>
                 </div>
 
                 {/* Security Notice */}
