@@ -4,6 +4,7 @@ import { AuthPage } from './components/auth/AuthPage';
 import { ClientZeroAuth } from './components/auth/ClientZeroAuth';
 import { LawyerPortal } from './components/portals/LawyerPortal';
 import { ClientPortal } from './components/portals/ClientPortal';
+import { AdminControlCenter } from './components/admin/AdminControlCenter';
 import { RoleProvider } from './context/RoleContext';
 import { CaseProvider } from './context/CaseContext';
 import { supabase } from './services/supabase';
@@ -15,6 +16,7 @@ type AppScreen = 'role_gate' | 'auth_lawyer' | 'auth_client';
 type UserRole = 'lawyer' | 'client';
 
 const SESSION_KEY = 'mohkam_client_session';
+const ADMIN_ROUTE = '/admin-control-center';
 
 interface ClientSession {
   userId: string;
@@ -37,6 +39,18 @@ function AppContent() {
 
   // Check for existing session
   useEffect(() => {
+    // Check for admin control center route
+    if (window.location.pathname === ADMIN_ROUTE) {
+      // Let auth state determine if they can access
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        if (session?.user) {
+          setUser(session.user);
+        }
+        setLoading(false);
+      });
+      return;
+    }
+
     // If we have invite URL params, go straight to client auth
     if (urlLawyerId && inviteToken) {
       setScreen('auth_client');
@@ -173,6 +187,11 @@ function AppContent() {
         <p style={{ color: 'var(--muted)', fontSize: 14 }}>جاري التحميل...</p>
       </div>
     );
+  }
+
+  // Admin Control Center route
+  if (window.location.pathname === ADMIN_ROUTE) {
+    return <AdminControlCenter user={user} onLogout={logout} />;
   }
 
   // Authenticated: show portal

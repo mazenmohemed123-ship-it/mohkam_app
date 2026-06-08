@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Crown, Zap, Users, Lock, Check, MapPin, Wallet, CreditCard, Shield, ArrowRight } from 'lucide-react';
+import { Crown, Zap, Users, Lock, Check, MapPin, Wallet, CreditCard, Shield, ArrowRight, Globe, DollarSign } from 'lucide-react';
 import { Button, Card, Badge, Spinner } from '../atoms';
 import { supabase } from '../../services/supabase';
 import { useRole, type Tier } from '../../context/RoleContext';
@@ -11,110 +11,204 @@ interface SubScreenProps {
   caseCount?: number;
 }
 
+/* Currency conversion rates (USD base) */
+const CURRENCY_RATES: Record<string, { rate: number; symbol: string; name: string; nameAr: string }> = {
+  USD: { rate: 1, symbol: '$', name: 'US Dollar', nameAr: 'دولار أمريكي' },
+  EGP: { rate: 48.5, symbol: 'ج', name: 'Egyptian Pound', nameAr: 'جنيه مصري' },
+  SAR: { rate: 3.75, symbol: 'ر.س', name: 'Saudi Riyal', nameAr: 'ريال سعودي' },
+  AED: { rate: 3.67, symbol: 'د.إ', name: 'UAE Dirham', nameAr: 'درهم إماراتي' },
+};
+
+/* Base prices in USD */
+const BASE_PRICES: Record<string, { monthly: number; name: string; nameAr: string }> = {
+  free: { monthly: 0, name: 'Free', nameAr: 'مجاني' },
+  premium: { monthly: 20, name: 'Pro', nameAr: 'احترافي' },
+  team: { monthly: 50, name: 'Team', nameAr: 'فريق' },
+};
+
+/* Translations */
+const TRANSLATIONS = {
+  ar: {
+    subscription: 'الباقات والاشتراكات',
+    currentPlan: 'باقتك الحالية',
+    month: 'شهر',
+    features: {
+      free: ['3 قضايا فقط', 'تسجيل صوتي أساسي', 'بوابة الموكل'],
+      premium: ['قضايا غير محدودة', 'شات real-time', 'إشعارات FCM', 'رابط دعوة', 'تحليل صوتي'],
+      team: ['كل ميزات الاحترافي', 'حتى 10 محامين', 'تقارير مالية', 'دعم أولوية', 'سكرتير ومحاسب'],
+    },
+    subscribeNow: 'اشترك الآن',
+    currentPlanBtn: 'خطتك الحالية',
+    popular: 'الأكثر شعبية',
+    lawFirms: 'مكاتب المحامين',
+    checkoutTitle: 'صفحة دفع',
+    securePayment: 'دفع آمن',
+    selectPayment: 'اختر طريقة الدفع',
+    amountDue: 'المبلغ المطلوب',
+    monthly: 'شهرياً',
+    payNow: 'ادفع الآن',
+    processing: 'جاري المعالجة...',
+    paymentSuccess: 'تم الدفع بنجاح!',
+    cardDetails: 'بيانات البطاقة',
+    cardName: 'اسم حامل البطاقة',
+    cardNumber: 'رقم البطاقة',
+    expiry: 'تاريخ الانتهاء',
+    cvv: 'CVV',
+    card: 'بطاقة ائتمانية',
+    cardDesc: 'فيزا / ماستركارد / Meeza',
+    terms: 'بالضغط على "ادفع" فإنك توافق على شروط الاستخدام وسياسة الخصوصية.',
+  },
+  en: {
+    subscription: 'Subscriptions & Plans',
+    currentPlan: 'Your current plan',
+    month: 'month',
+    features: {
+      free: ['3 cases only', 'Basic voice recording', 'Client Portal'],
+      premium: ['Unlimited cases', 'Real-time chat', 'FCM notifications', 'Invite link', 'Voice analysis'],
+      team: ['All Pro features', 'Up to 10 lawyers', 'Financial reports', 'Priority support', 'Secretary & accountant'],
+    },
+    subscribeNow: 'Subscribe Now',
+    currentPlanBtn: 'Your Current Plan',
+    popular: 'Most Popular',
+    lawFirms: 'Law Firms',
+    checkoutTitle: 'Checkout',
+    securePayment: 'Secure Payment',
+    selectPayment: 'Select payment method',
+    amountDue: 'Amount Due',
+    monthly: 'monthly',
+    payNow: 'Pay Now',
+    processing: 'Processing...',
+    paymentSuccess: 'Payment Successful!',
+    cardDetails: 'Card Details',
+    cardName: 'Cardholder Name',
+    cardNumber: 'Card Number',
+    expiry: 'Expiry Date',
+    cvv: 'CVV',
+    card: 'Credit Card',
+    cardDesc: 'Visa / Mastercard / Meeza',
+    terms: 'By clicking "Pay Now", you agree to the Terms of Service and Privacy Policy.',
+  },
+};
+
 interface TierInfo {
   id: Tier;
-  name: string;
-  priceLocal: number;
-  priceIntl: number;
-  currency: string;
+  priceUSD: number;
   icon: typeof Crown;
   color: string;
-  badge?: string;
-  features: string[];
+  badge?: { ar: string; en: string };
 }
 
-/* Paymob payment channels */
-const PAYMOB_CHANNELS = [
-  { id: 'card', label: 'بطاقة ائتمانية', desc: 'فيزا / ماستركارد / Meeza', icon: '💳', color: '#635BFF' },
-  { id: 'vodafone', label: 'فودافون كاش', desc: 'محفظة فودافون كاش', icon: '📱', color: '#E60000' },
-  { id: 'aman', label: 'أمان', desc: 'محفظة أمان الإلكترونية', icon: '🏦', color: '#00B4D8' },
-];
-
 const TIERS: TierInfo[] = [
-  {
-    id: 'free', name: 'مجاني', priceLocal: 0, priceIntl: 0, currency: 'EGP',
-    icon: Zap, color: 'var(--muted)', badge: undefined,
-    features: ['3 قضايا فقط', 'تسجيل صوتي أساسي', 'بوابة الموكل'],
-  },
-  {
-    id: 'premium', name: 'احترافي', priceLocal: 500, priceIntl: 20, currency: 'EGP',
-    icon: Crown, color: 'var(--navy)', badge: 'الأكثر شعبية',
-    features: ['قضايا غير محدودة', 'شات real-time', 'إشعارات FCM', 'رابط دعوة', 'تحليل صوتي'],
-  },
-  {
-    id: 'team', name: 'فريق', priceLocal: 800, priceIntl: 50, currency: 'EGP',
-    icon: Users, color: 'var(--gold)', badge: 'مكاتب المحامين',
-    features: ['كل ميزات الاحترافي', 'حتى 10 محامين', 'تقارير مالية', 'دعم أولوية', 'سكرتير ومحاسب'],
-  },
+  { id: 'free', priceUSD: 0, icon: Zap, color: 'var(--muted)' },
+  { id: 'premium', priceUSD: 20, icon: Crown, color: 'var(--navy)', badge: { ar: 'الأكثر شعبية', en: 'Most Popular' } },
+  { id: 'team', priceUSD: 50, icon: Users, color: 'var(--gold)', badge: { ar: 'مكاتب المحامين', en: 'Law Firms' } },
 ];
 
-function detectLocale(): 'local' | 'intl' {
+/* Payment channels */
+const PAYMENT_CHANNELS = [
+  { id: 'card', icon: '💳', color: '#635BFF' },
+];
+
+function detectCurrency(): string {
   try {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    if (tz.startsWith('Africa/Cairo') || tz.includes('Egypt')) return 'local';
-    const lang = navigator.language || (navigator as any).userLanguage;
-    if (lang?.startsWith('ar-EG')) return 'local';
-    return 'intl';
-  } catch {
-    return 'local';
-  }
+    const lang = navigator.language || '';
+    if (tz.includes('Cairo') || tz.includes('Egypt') || lang === 'ar-EG') return 'EGP';
+    if (tz.includes('Riyadh') || tz.includes('Saudi') || lang === 'ar-SA') return 'SAR';
+    if (tz.includes('Dubai') || tz.includes('Abu') || lang === 'ar-AE') return 'AED';
+    return 'USD';
+  } catch { return 'USD'; }
+}
+
+function detectLang(): 'ar' | 'en' {
+  const navLang = navigator.language || '';
+  if (navLang.startsWith('ar')) return 'ar';
+  if (navLang.startsWith('en')) return 'en';
+  return 'ar';
 }
 
 export function SubScreen({ profile, onUpdateProfile, push, caseCount = 0 }: SubScreenProps) {
   const [upgrading, setUpgrading] = useState<string | null>(null);
-  const [locale, setLocale] = useState<'local' | 'intl'>('local');
+  const [currency, setCurrency] = useState<string>('USD');
+  const [lang, setLang] = useState<'ar' | 'en'>('ar');
   const { isTeamLocked, tier } = useRole();
 
-  /* Paymob checkout modal state */
+  /* Checkout modal state */
   const [showCheckout, setShowCheckout] = useState(false);
   const [selectedTier, setSelectedTier] = useState<TierInfo | null>(null);
-  const [selectedChannel, setSelectedChannel] = useState<string>('');
   const [processing, setProcessing] = useState(false);
   const [paymentSuccess, setPaymentSuccess] = useState(false);
 
+  /* Cardholder form state */
+  const [cardName, setCardName] = useState('');
+  const [cardNumber, setCardNumber] = useState('');
+  const [cardExpiry, setCardExpiry] = useState('');
+  const [cardCVV, setCardCVV] = useState('');
+
   useEffect(() => {
-    setLocale(detectLocale());
+    setCurrency(detectCurrency());
+    setLang(detectLang());
   }, []);
 
-  const isOutsideEgypt = locale === 'intl';
+  const t = TRANSLATIONS[lang];
+  const curr = CURRENCY_RATES[currency];
 
-  /* Open Paymob checkout modal instead of immediate upgrade */
+  const convertPrice = (usd: number) => {
+    const converted = usd * curr.rate;
+    if (currency === 'USD') return `$${converted.toFixed(0)}`;
+    return `${converted.toFixed(0)} ${curr.symbol}`;
+  };
+
+  const isCurTier = (tierId: string) => (profile?.tier || 'free') === tierId;
+  const isFreeTierLocked = tier === 'free' && caseCount >= 3;
+
   const openCheckout = (tierInfo: TierInfo) => {
-    if (tierInfo.id === 'free') return; // Free tier doesn't need payment
+    if (tierInfo.id === 'free') return;
     setSelectedTier(tierInfo);
-    setSelectedChannel('');
+    setCardName('');
+    setCardNumber('');
+    setCardExpiry('');
+    setCardCVV('');
     setPaymentSuccess(false);
     setShowCheckout(true);
   };
 
   const closeCheckout = () => {
-    if (processing) return; // Prevent closing during processing
+    if (processing) return;
     setShowCheckout(false);
     setSelectedTier(null);
-    setSelectedChannel('');
   };
 
-  /* Process payment through Paymob - simulate gateway connection */
   const processPayment = async () => {
-    if (!selectedTier || !selectedChannel) return;
+    if (!selectedTier || !cardName || !cardNumber || cardNumber.length < 15) return;
 
     setProcessing(true);
 
-    // Simulate connection to Paymob gateway
-    // In production: Call Supabase Edge Function to create Paymob order, get payment key, redirect to checkout
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    try {
+      /* Invoke Edge Function for checkout session */
+      const { data, error } = await supabase.functions.invoke('create-checkout-session', {
+        body: {
+          tier: selectedTier.id,
+          amount: selectedTier.priceUSD,
+          currency: currency.toLowerCase(),
+          cardholder: {
+            name: cardName,
+            last4: cardNumber.slice(-4),
+          },
+        },
+      });
 
-    // Simulate successful webhook response
-    // In production: Webhook from Paymob would update the database
-    const { error } = await supabase.from('profiles').update({
-      tier: selectedTier.id,
-      started_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-    }).eq('id', profile.id);
+      if (error) throw error;
 
-    setProcessing(false);
+      /* Update profile on success */
+      const { error: updateError } = await supabase.from('profiles').update({
+        tier: selectedTier.id,
+        started_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      }).eq('id', profile.id);
 
-    if (!error) {
+      if (updateError) throw updateError;
+
       setPaymentSuccess(true);
       const updated = {
         ...profile,
@@ -123,111 +217,104 @@ export function SubScreen({ profile, onUpdateProfile, push, caseCount = 0 }: Sub
         expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
       };
       onUpdateProfile(updated);
-      push(`✓ تمت الترقية إلى ${selectedTier.name} بنجاح!`, 'success');
+      push(lang === 'ar' ? `✓ تمت الترقية بنجاح!` : `✓ Upgrade successful!`, 'success');
 
-      // Auto-close after showing success
       setTimeout(() => {
         setShowCheckout(false);
         setSelectedTier(null);
       }, 2000);
-    } else {
-      push('خطأ في تحديث الباقة: ' + error.message, 'danger');
+    } catch (err: any) {
+      push(lang === 'ar' ? 'خطأ في الدفع: ' + err.message : 'Payment error: ' + err.message, 'danger');
     }
-  };
 
-  const formatPrice = (t: TierInfo) => {
-    if (isOutsideEgypt) return `$${t.priceIntl}`;
-    return `${t.priceLocal.toLocaleString('ar-EG')} ج`;
+    setProcessing(false);
   };
-
-  const getPrice = (t: TierInfo) => {
-    return isOutsideEgypt ? t.priceIntl : t.priceLocal;
-  };
-
-  const isFreeTierLocked = tier === 'free' && caseCount >= 3;
 
   return (
     <div className="fade-up" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Header with language/currency selector */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h3 style={{ fontWeight: 800, color: 'var(--navy)', fontSize: 18 }}>الباقات والاشتراكات</h3>
+          <h3 style={{ fontWeight: 800, color: 'var(--navy)', fontSize: 18 }}>{t.subscription}</h3>
           <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}>
-            باقتك الحالية: <strong>{profile?.tier === 'free' ? 'مجاني' : profile?.tier === 'premium' ? 'احترافي' : 'فريق'}</strong>
+            {t.currentPlan}: <strong>{BASE_PRICES[profile?.tier || 'free'].nameAr}</strong>
           </p>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: '#F5F8FF', borderRadius: 8 }}>
-          <MapPin size={12} color={isOutsideEgypt ? 'var(--gold)' : 'var(--success)'} />
-          <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 600 }}>
-            {isOutsideEgypt ? 'دولي (USD)' : 'مصر (EGP)'}
-          </span>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {/* Language toggle */}
+          <button onClick={() => setLang(lang === 'ar' ? 'en' : 'ar')} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '6px 10px', background: '#F5F8FF', borderRadius: 6, border: '1px solid var(--border)', cursor: 'pointer' }}>
+            <Globe size={12} color="var(--navy)" />
+            <span style={{ fontSize: 11, fontWeight: 700 }}>{lang === 'ar' ? 'EN' : 'ع'}</span>
+          </button>
+
+          {/* Currency selector */}
+          <select value={currency} onChange={(e) => setCurrency(e.target.value)} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 11, fontWeight: 700, background: '#fff' }}>
+            {Object.keys(CURRENCY_RATES).map((c) => (
+              <option key={c} value={c}>{CURRENCY_RATES[c].symbol} {c}</option>
+            ))}
+          </select>
         </div>
       </div>
 
+      {/* Free tier locked warning */}
       {isFreeTierLocked && (
         <div style={{ background: '#FDECEF', borderRadius: 10, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
           <Lock size={16} color="var(--danger)" />
           <div>
-            <p style={{ fontSize: 13, fontWeight: 800, color: 'var(--danger)' }}>تم الوصول للحد الأقصى</p>
-            <p style={{ fontSize: 11, color: 'var(--muted)' }}>باقة المجاني تسمح بـ 3 قضايا فقط. قم بالترقية لإضافة المزيد.</p>
+            <p style={{ fontSize: 13, fontWeight: 800, color: 'var(--danger)' }}>{lang === 'ar' ? 'تم الوصول للحد الأقصى' : 'Limit Reached'}</p>
+            <p style={{ fontSize: 11, color: 'var(--muted)' }}>{lang === 'ar' ? 'باقة المجاني تسمح بـ 3 قضايا فقط' : 'Free plan allows only 3 cases'}</p>
           </div>
         </div>
       )}
 
-      {/* Tier Cards - Responsive Grid - All 3 visible on mobile/desktop */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {TIERS.map((t) => {
-          const isCur = (profile?.tier || 'free') === t.id;
-          const isLocked = t.id === 'team' && isTeamLocked;
-          const Icon = t.icon;
+      {/* VERTICAL STACKED TIER CARDS - Mobile Optimized */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {TIERS.map((tierInfo) => {
+          const isCur = isCurTier(tierInfo.id);
+          const isLocked = tierInfo.id === 'team' && isTeamLocked;
+          const Icon = tierInfo.icon;
 
           return (
             <Card
-              key={t.id}
+              key={tierInfo.id}
               style={{
-                padding: 24, position: 'relative', overflow: 'hidden',
-                border: isCur ? `2px solid ${t.color}` : '1px solid var(--border)',
-                boxShadow: isCur ? `0 4px 20px ${t.color}22` : 'var(--shadow)',
+                padding: 20, position: 'relative', overflow: 'hidden',
+                border: isCur ? `2px solid ${tierInfo.color}` : '1px solid var(--border)',
+                boxShadow: isCur ? `0 4px 20px ${tierInfo.color}22` : 'var(--shadow)',
                 transition: 'all .3s',
               }}
-              className={isLocked ? 'lock-overlay' : ''}
             >
-              {/* Badge */}
-              {t.badge && (
-                <div style={{
-                  position: 'absolute', top: -1, left: 0, right: 0, height: 3,
-                  background: t.color, borderRadius: '14px 14px 0 0',
-                }} />
+              {/* Badge strip */}
+              {tierInfo.badge && (
+                <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: tierInfo.color }} />
               )}
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-                <div style={{
-                  width: 40, height: 40, borderRadius: 10,
-                  background: t.color + '15', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                  <Icon size={20} color={t.color} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                <div style={{ width: 48, height: 48, borderRadius: 12, background: tierInfo.color + '18', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Icon size={24} color={tierInfo.color} />
                 </div>
-                <div>
-                  <p style={{ fontWeight: 900, fontSize: 17, color: 'var(--text)' }}>{t.name}</p>
-                  {t.badge && <Badge color={t.id === 'team' ? 'gold' : 'navy'}>{t.badge}</Badge>}
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontWeight: 900, fontSize: 20, color: 'var(--text)' }}>
+                    {lang === 'ar' ? BASE_PRICES[tierInfo.id].nameAr : BASE_PRICES[tierInfo.id].name}
+                  </p>
+                  {tierInfo.badge && <Badge color={tierInfo.id === 'team' ? 'gold' : 'navy'}>{lang === 'ar' ? tierInfo.badge.ar : tierInfo.badge.en}</Badge>}
                 </div>
+                {tierInfo.priceUSD > 0 && (
+                  <div style={{ textAlign: lang === 'ar' ? 'right' : 'left' }}>
+                    <p style={{ fontSize: 24, fontWeight: 900, color: tierInfo.color, fontFamily: "'JetBrains Mono', monospace" }}>
+                      {convertPrice(tierInfo.priceUSD)}
+                    </p>
+                    <p style={{ fontSize: 10, color: 'var(--muted)' }}>/ {t.month}</p>
+                  </div>
+                )}
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 3, marginBottom: 16 }}>
-                <span style={{ fontSize: 32, fontWeight: 900, color: t.color, fontFamily: "'JetBrains Mono', monospace" }}>
-                  {formatPrice(t)}
-                </span>
-                <span style={{ fontSize: 12, color: 'var(--muted)' }}>/شهر</span>
-              </div>
-
-              <ul style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 20 }}>
-                {t.features.map((f) => (
+              {/* Features list */}
+              <ul style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16, paddingLeft: lang === 'en' ? 18 : 0 }}>
+                {t.features[tierInfo.id].map((f) => (
                   <li key={f} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text)' }}>
-                    <div style={{
-                      width: 18, height: 18, borderRadius: '50%',
-                      background: t.color + '20', color: t.color,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                    }}>
+                    <div style={{ width: 18, height: 18, borderRadius: '50%', background: tierInfo.color + '20', color: tierInfo.color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                       <Check size={10} />
                     </div>
                     {f}
@@ -235,36 +322,21 @@ export function SubScreen({ profile, onUpdateProfile, push, caseCount = 0 }: Sub
                 ))}
               </ul>
 
+              {/* Subscribe button */}
               <Button
-                variant={isCur ? 'secondary' : t.id === 'team' ? 'gold' : 'primary'}
-                disabled={isCur || upgrading === t.id || isLocked}
-                onClick={() => !isLocked && openCheckout(t)}
+                variant={isCur ? 'secondary' : tierInfo.id === 'team' ? 'gold' : 'primary'}
+                disabled={isCur || upgrading === tierInfo.id || isLocked}
+                onClick={() => !isLocked && openCheckout(tierInfo)}
                 fullWidth
-                style={{ background: isCur ? undefined : t.color }}
+                style={{ background: isCur ? undefined : tierInfo.color }}
               >
-                {upgrading === t.id ? <><Spinner /> جاري الترقية...</> : isCur ? '✓ خطتك الحالية' : 'ترقية الآن'}
+                {upgrading === tierInfo.id ? <><Spinner /> {t.processing}</> : isCur ? t.currentPlanBtn : t.subscribeNow}
               </Button>
 
-              {/* Monetization Lock overlay */}
+              {/* Lock overlay */}
               {isLocked && (
-                <div style={{
-                  position: 'absolute', inset: 0,
-                  background: 'rgba(255,255,255,.7)', backdropFilter: 'blur(4px)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  borderRadius: 'var(--radius)', zIndex: 10,
-                }}>
-                  <Badge color="gold" >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <Lock size={10} /> الميزة مقفلة - برجاء الترقية لباقة الفريق (800 ج)
-                    </div>
-                  </Badge>
-                </div>
-              )}
-
-              {/* Subscription metadata */}
-              {isCur && isOutsideEgypt && (
-                <div style={{ marginTop: 12, padding: '8px 12px', background: '#F5F8FF', borderRadius: 8, fontSize: 10, color: 'var(--muted)', fontFamily: "'JetBrains Mono', monospace" }}>
-                  started_at: {profile?.started_at || '—'} | expires_at: {profile?.expires_at || '—'} | cancelled_at: {profile?.cancelled_at || 'null'}
+                <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 'var(--radius)', zIndex: 10 }}>
+                  <Badge color="gold"><Lock size={10} style={{ marginRight: 4 }} /> {lang === 'ar' ? 'مقفلة' : 'Locked'}</Badge>
                 </div>
               )}
             </Card>
@@ -272,163 +344,100 @@ export function SubScreen({ profile, onUpdateProfile, push, caseCount = 0 }: Sub
         })}
       </div>
 
-      {/* ==================== PAYMOB CHECKOUT MODAL ==================== */}
+      {/* ==================== CHECKOUT MODAL ==================== */}
       {showCheckout && selectedTier && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(10,20,60,.8)', backdropFilter: 'blur(8px)',
-          zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
-        }}>
-          <Card className="slide-up" style={{ width: '100%', maxWidth: 480, overflow: 'hidden' }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(10,20,60,.85)', backdropFilter: 'blur(8px)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <Card className="slide-up" style={{ width: '100%', maxWidth: 440, overflow: 'hidden' }}>
             {/* Header */}
-            <div style={{
-              background: 'linear-gradient(135deg, var(--navy), var(--navy-light))',
-              padding: '20px 24px', color: '#fff',
-            }}>
+            <div style={{ background: 'linear-gradient(135deg, var(--navy), var(--navy-light))', padding: '18px 20px', color: '#fff' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div style={{
-                    width: 48, height: 48, borderRadius: 12, background: 'rgba(255,255,255,.15)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}>
-                    <selectedTier.icon size={24} color={selectedTier.color} />
-                  </div>
-                  <div>
-                    <p style={{ fontSize: 18, fontWeight: 900 }}>ترقية إلى {selectedTier.name}</p>
-                    <p style={{ fontSize: 12, opacity: 0.7 }}>دفع آمن عبر Paymob</p>
-                  </div>
+                <div>
+                  <p style={{ fontSize: 16, fontWeight: 900 }}>{t.checkoutTitle}</p>
+                  <p style={{ fontSize: 11, opacity: 0.7 }}>{t.securePayment}</p>
                 </div>
                 {!processing && (
-                  <button
-                    onClick={closeCheckout}
-                    style={{
-                      background: 'rgba(255,255,255,.15)', border: 'none',
-                      color: '#fff', width: 32, height: 32, borderRadius: 8,
-                      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    }}
-                  >
-                    <ArrowRight size={18} />
+                  <button onClick={closeCheckout} style={{ background: 'rgba(255,255,255,.15)', border: 'none', color: '#fff', width: 32, height: 32, borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    ×
                   </button>
                 )}
               </div>
             </div>
 
             {paymentSuccess ? (
-              /* Success State */
-              <div className="fade-up" style={{ padding: 40, textAlign: 'center' }}>
-                <div style={{
-                  width: 72, height: 72, borderRadius: '50%', background: '#E6F7EF',
-                  margin: '0 auto 16px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                  <Check size={36} color="var(--success)" />
+              <div className="fade-up" style={{ padding: 32, textAlign: 'center' }}>
+                <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#E6F7EF', margin: '0 auto 12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Check size={32} color="var(--success)" />
                 </div>
-                <h3 style={{ fontSize: 20, fontWeight: 900, color: 'var(--success)', marginBottom: 8 }}>
-                  تم الدفع بنجاح!
-                </h3>
-                <p style={{ fontSize: 14, color: 'var(--muted)' }}>
-                  تم تفعيل باقة {selectedTier.name} لحسابك
-                </p>
+                <p style={{ fontSize: 18, fontWeight: 900, color: 'var(--success)', marginBottom: 6 }}>{t.paymentSuccess}</p>
+                <p style={{ fontSize: 13, color: 'var(--muted)' }}>{t.subscription}</p>
               </div>
             ) : (
-              <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
-                {/* Amount Display - High Visibility */}
-                <div style={{
-                  background: 'linear-gradient(135deg, #FFFBEB, #FEF3C7)',
-                  borderRadius: 16, padding: 20, textAlign: 'center',
-                  border: '2px solid var(--gold)',
-                }}>
-                  <p style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 700, marginBottom: 6 }}>المبلغ المطلوب</p>
-                  <p style={{
-                    fontSize: 42, fontWeight: 900, color: 'var(--gold)',
-                    fontFamily: "'JetBrains Mono', monospace",
-                    textShadow: '0 2px 8px rgba(200,149,42,.2)',
-                  }}>
-                    {formatPrice(selectedTier)}
+              <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {/* Amount Display */}
+                <div style={{ background: 'linear-gradient(135deg, #FFFBEB, #FEF3C7)', borderRadius: 14, padding: 16, textAlign: 'center', border: '2px solid var(--gold)' }}>
+                  <p style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700, marginBottom: 4 }}>{t.amountDue}</p>
+                  <p style={{ fontSize: 36, fontWeight: 900, color: 'var(--gold)', fontFamily: "'JetBrains Mono', monospace" }}>
+                    {convertPrice(selectedTier.priceUSD)}
                   </p>
-                  <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
-                    {isOutsideEgypt ? 'USD' : 'جنيه مصري'} / شهرياً
-                  </p>
+                  <p style={{ fontSize: 10, color: 'var(--muted)' }}>{t.monthly}</p>
                 </div>
 
-                {/* Payment Channels */}
-                <div>
-                  <p style={{ fontSize: 13, fontWeight: 800, color: 'var(--navy)', marginBottom: 12 }}>
-                    اختر طريقة الدفع
-                  </p>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {PAYMOB_CHANNELS.map((ch) => (
-                      <button
-                        key={ch.id}
-                        onClick={() => !processing && setSelectedChannel(ch.id)}
-                        disabled={processing}
-                        style={{
-                          display: 'flex', alignItems: 'center', gap: 14,
-                          padding: '14px 16px', borderRadius: 14,
-                          border: selectedChannel === ch.id ? `2px solid ${ch.color}` : '1.5px solid var(--border)',
-                          background: selectedChannel === ch.id ? `${ch.color}08` : '#fff',
-                          cursor: processing ? 'not-allowed' : 'pointer',
-                          transition: 'all .2s', textAlign: 'right',
-                          opacity: processing ? 0.6 : 1,
-                        }}
-                      >
-                        <span style={{ fontSize: 28, flexShrink: 0 }}>{ch.icon}</span>
-                        <div style={{ flex: 1 }}>
-                          <p style={{ fontSize: 14, fontWeight: 800, color: 'var(--text)' }}>{ch.label}</p>
-                          <p style={{ fontSize: 12, color: 'var(--muted)' }}>{ch.desc}</p>
-                        </div>
-                        {selectedChannel === ch.id && (
-                          <div style={{
-                            width: 24, height: 24, borderRadius: '50%', background: ch.color,
-                            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                          }}>
-                            <Check size={14} color="#fff" />
-                          </div>
-                        )}
-                      </button>
-                    ))}
+                {/* Cardholder Details Form */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <p style={{ fontSize: 12, fontWeight: 800, color: 'var(--navy)' }}>{t.cardDetails}</p>
+
+                  <input
+                    type="text"
+                    value={cardName}
+                    onChange={(e) => setCardName(e.target.value)}
+                    placeholder={t.cardName}
+                    style={{ padding: '12px 14px', border: '1.5px solid var(--border)', borderRadius: 10, fontSize: 13, fontFamily: "'Cairo',sans-serif", width: '100%' }}
+                  />
+
+                  <input
+                    type="text"
+                    value={cardNumber}
+                    onChange={(e) => setCardNumber(e.target.value.replace(/\D/g, '').slice(0, 16))}
+                    placeholder={t.cardNumber}
+                    style={{ padding: '12px 14px', border: '1.5px solid var(--border)', borderRadius: 10, fontSize: 13, fontFamily: "'JetBrains Mono', monospace", width: '100%', direction: 'ltr' }}
+                  />
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <input
+                      type="text"
+                      value={cardExpiry}
+                      onChange={(e) => setCardExpiry(e.target.value)}
+                      placeholder={t.expiry}
+                      style={{ padding: '12px 14px', border: '1.5px solid var(--border)', borderRadius: 10, fontSize: 13, fontFamily: "'JetBrains Mono', monospace" }}
+                    />
+                    <input
+                      type="text"
+                      value={cardCVV}
+                      onChange={(e) => setCardCVV(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                      placeholder={t.cvv}
+                      style={{ padding: '12px 14px', border: '1.5px solid var(--border)', borderRadius: 10, fontSize: 13, fontFamily: "'JetBrains Mono', monospace" }}
+                    />
                   </div>
                 </div>
 
                 {/* Security Notice */}
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: 10,
-                  padding: '10px 14px', background: '#F5F8FF', borderRadius: 10,
-                }}>
-                  <Shield size={16} color="var(--navy)" />
-                  <div>
-                    <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--navy)' }}>دفع آمن ومشفر</p>
-                    <p style={{ fontSize: 10, color: 'var(--muted)' }}>جميع المعاملات محمية بـ SSL/TLS</p>
-                  </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: '#F5F8FF', borderRadius: 8 }}>
+                  <Shield size={14} color="var(--navy)" />
+                  <p style={{ fontSize: 10, color: 'var(--muted)' }}>{lang === 'ar' ? 'دفع آمن ومشفر 256-bit' : '256-bit encrypted secure payment'}</p>
                 </div>
 
                 {/* Pay Button */}
                 <Button
                   variant="gold"
                   fullWidth
-                  disabled={!selectedChannel || processing}
+                  disabled={!cardName || cardNumber.length < 15 || processing}
                   onClick={processPayment}
-                  style={{
-                    padding: '16px 24px', fontSize: 16,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
-                  }}
+                  style={{ padding: '14px 20px', fontSize: 15, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
                 >
-                  {processing ? (
-                    <>
-                      <Spinner size={20} />
-                      <span>جاري الاتصال ببوابة سداد Paymob الآمنة...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Wallet size={18} />
-                      <span>ادفع {formatPrice(selectedTier)}</span>
-                    </>
-                  )}
+                  {processing ? <><Spinner /> {t.processing}</> : <><Wallet size={16} /> {t.payNow}</>}
                 </Button>
 
-                {/* Terms */}
-                <p style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center', lineHeight: 1.6 }}>
-                  بالضغط على "ادفع" فإنك توافق على شروط الاستخدام وسياسة الخصوصية.
-                  سيتم تفعيل الباقة فوراً بعد نجاح الدفع.
-                </p>
+                <p style={{ fontSize: 9, color: 'var(--muted)', textAlign: 'center', lineHeight: 1.5 }}>{t.terms}</p>
               </div>
             )}
           </Card>

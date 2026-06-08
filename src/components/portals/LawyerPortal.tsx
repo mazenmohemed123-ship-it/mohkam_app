@@ -56,6 +56,11 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
   const [emergencyEnabled, setEmergencyEnabled] = useState(initProfile.is_emergency_enabled ?? true);
   const [flashAlert, setFlashAlert] = useState<{ type: 'emergency' | 'appointment'; data: any } | null>(null);
 
+  // Debt enforcement state
+  const [debtOverdue, setDebtOverdue] = useState(false);
+  const commissionDebt = (profile as any).commission_debt || 0;
+  const isFrozen = (profile as any).is_frozen || false;
+
   // Availability state - simplified with work_from/work_to
   const [availability, setAvailability] = useState<LawyerAvailabilityData>({
     available_days: ['saturday', 'sunday', 'monday', 'tuesday', 'wednesday', 'thursday'],
@@ -81,6 +86,15 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
   } = useCase();
 
   const isFreeTierLocked = tier === 'free' && cases.length >= 3;
+
+  // Debt enforcement: Block portal if debt > 500 EGP
+  useEffect(() => {
+    if (commissionDebt > 500) {
+      setDebtOverdue(true);
+    } else {
+      setDebtOverdue(false);
+    }
+  }, [commissionDebt]);
 
   useEffect(() => { loadCases(user.id); loadAppointments(user.id); }, [user.id, loadCases, loadAppointments]);
 
@@ -364,6 +378,41 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column' }}>
       <NotificationUI list={notifList} />
+
+      {/* DEBT ENFORCEMENT OVERLAY - Block portal if debt > 500 EGP */}
+      {(debtOverdue || isFrozen) && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 10000,
+          background: 'rgba(0,0,0,.85)', backdropFilter: 'blur(12px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+        }}>
+          <Card style={{ maxWidth: 420, padding: 32, textAlign: 'center' }}>
+            <div style={{ width: 80, height: 80, borderRadius: '50%', background: '#FDECEF', margin: '0 auto 20px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <AlertTriangle size={40} color="var(--danger)" />
+            </div>
+            <h2 style={{ fontSize: 22, fontWeight: 900, color: 'var(--danger)', marginBottom: 12 }}>
+              {isFrozen ? 'تم تجميد حسابك' : 'الرصيد المستحق تجاوز الحد'}
+            </h2>
+            <p style={{ fontSize: 14, color: 'var(--text)', marginBottom: 20, lineHeight: 1.8 }}>
+              {isFrozen
+                ? 'تم تجميد حسابك بواسطة الإدارة. يرجى التواصل مع الدعم للحل.'
+                : `رصيد العمولة المستحق: ${commissionDebt.toLocaleString()} ج. يجب تسديد المبلغ لاستخدام المنصة.`}
+            </p>
+            <div style={{ background: '#F5F8FF', borderRadius: 12, padding: 16, marginBottom: 20 }}>
+              <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>طريقة التسديد</p>
+              <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
+                تحويل بنكي / فودافون كاش / InstaPay
+              </p>
+              <p style={{ fontSize: 10, color: 'var(--muted)', marginTop: 8 }}>
+                تواصل مع الدعم لتأكيد الدفع: support@mohkam.com
+              </p>
+            </div>
+            <Button variant="danger" fullWidth onClick={onLogout}>
+              <LogOut size={14} style={{ marginRight: 8 }} /> تسجيل الخروج
+            </Button>
+          </Card>
+        </div>
+      )}
 
       {flashAlert && (
         <div className="flash-pulse" style={{
