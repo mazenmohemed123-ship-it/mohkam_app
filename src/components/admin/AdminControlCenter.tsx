@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Shield, Search, Users, DollarSign, Ban, Check, X, Crown, Zap, Settings, AlertTriangle, LogOut, Edit3, Save, Filter, TrendingUp, UserX, UserCheck } from 'lucide-react';
+import { Shield, Search, Users, DollarSign, Ban, Check, X, Crown, Zap, Settings, AlertTriangle, LogOut, CreditCard as Edit3, Save, Filter, TrendingUp, UserX, UserCheck } from 'lucide-react';
 import { Button, Card, Badge, Spinner } from '../atoms';
 import { supabase } from '../../services/supabase';
 import { useNotifications } from '../../hooks/useNotifications';
