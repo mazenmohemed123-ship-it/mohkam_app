@@ -22,6 +22,8 @@ export interface Profile {
   master_lawyer_id?: string;
   can_view_billing?: boolean;
   can_manage_appointments?: boolean;
+  // Commission debt tracking
+  commission_debt?: number;
   // Manual billing credentials
   vodafone_cash_number?: string;
   instapay_address?: string;
