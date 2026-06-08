@@ -525,28 +525,94 @@ export function LawyerPortal({ user, profile: initProfile, onLogout }: LawyerPor
         )}
 
         {tab === 'billing' && canManageBilling && (
-          <Card style={{ padding: 24 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
-              <Calculator size={20} color="var(--gold)" />
-              <h3 style={{ fontWeight: 800, color: 'var(--navy)', fontSize: 16 }}>الفواتير والأتعاب</h3>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-              <Card style={{ padding: 16, background: '#FFFBEB' }}>
-                <p style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700 }}>إجمالي الأتعاب</p>
-                <p style={{ fontSize: 24, fontWeight: 900, color: 'var(--gold)', fontFamily: "'JetBrains Mono', monospace" }}>{cases.reduce((s, c) => s + (Number(c.total_fees) || 0), 0).toLocaleString()} ج</p>
-              </Card>
-              <Card style={{ padding: 16, background: '#E6F7EF' }}>
-                <p style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700 }}>المصاريف الإدارية</p>
-                <p style={{ fontSize: 24, fontWeight: 900, color: 'var(--success)', fontFamily: "'JetBrains Mono', monospace" }}>{cases.reduce((s, c) => s + (Number(c.admin_fees) || 0), 0).toLocaleString()} ج</p>
-              </Card>
-              <Card style={{ padding: 16, background: '#F5F8FF' }}>
-                <p style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700 }}>صافي الإيرادات</p>
-                <p style={{ fontSize: 24, fontWeight: 900, color: 'var(--navy)', fontFamily: "'JetBrains Mono', monospace" }}>
-                  {(cases.reduce((s, c) => s + (Number(c.total_fees) || 0), 0) - cases.reduce((s, c) => s + (Number(c.admin_fees) || 0), 0)).toLocaleString()} ج
-                </p>
-              </Card>
-            </div>
-          </Card>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {/* Summary Cards */}
+            <Card style={{ padding: 24 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
+                <Calculator size={20} color="var(--gold)" />
+                <h3 style={{ fontWeight: 800, color: 'var(--navy)', fontSize: 16 }}>الفواتير والأتعاب</h3>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+                <Card style={{ padding: 16, background: '#FFFBEB' }}>
+                  <p style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700 }}>إجمالي الأتعاب</p>
+                  <p style={{ fontSize: 24, fontWeight: 900, color: 'var(--gold)', fontFamily: "'JetBrains Mono', monospace" }}>{cases.reduce((s, c) => s + (Number(c.total_fees) || 0), 0).toLocaleString()} ج</p>
+                </Card>
+                <Card style={{ padding: 16, background: '#E6F7EF' }}>
+                  <p style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700 }}>المصاريف الإدارية</p>
+                  <p style={{ fontSize: 24, fontWeight: 900, color: 'var(--success)', fontFamily: "'JetBrains Mono', monospace" }}>{cases.reduce((s, c) => s + (Number(c.admin_fees) || 0), 0).toLocaleString()} ج</p>
+                </Card>
+                <Card style={{ padding: 16, background: '#F5F8FF' }}>
+                  <p style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700 }}>صافي الإيرادات</p>
+                  <p style={{ fontSize: 24, fontWeight: 900, color: 'var(--navy)', fontFamily: "'JetBrains Mono', monospace" }}>
+                    {(cases.reduce((s, c) => s + (Number(c.total_fees) || 0), 0) - cases.reduce((s, c) => s + (Number(c.admin_fees) || 0), 0)).toLocaleString()} ج
+                  </p>
+                </Card>
+              </div>
+            </Card>
+
+            {/* Commission Debt Tracking */}
+            <Card style={{ padding: 20, background: 'linear-gradient(135deg, #FDECEF, #FFF5F5)', border: '2px solid var(--danger)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                <div style={{ width: 44, height: 44, borderRadius: 12, background: 'var(--danger)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Wallet size={20} color="#fff" />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700 }}>عمولة المنصة المستحقة</p>
+                  <p style={{ fontSize: 28, fontWeight: 900, color: 'var(--danger)', fontFamily: "'JetBrains Mono', monospace" }}>
+                    {(profile as any).commission_debt?.toLocaleString() || 0} ج
+                  </p>
+                </div>
+              </div>
+              <p style={{ fontSize: 11, color: 'var(--muted)' }}>
+                عمولة 5% من كل دفعة مؤكدة تُخصم تلقائياً عند تأكيد استلام المبلغ
+              </p>
+            </Card>
+
+            {/* Payment Confirmation by Case */}
+            <Card style={{ padding: 20 }}>
+              <h3 style={{ fontWeight: 800, color: 'var(--navy)', fontSize: 15, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <CreditCard size={16} /> تأكيد استلام المدفوعات
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {cases.filter((c) => Number(c.total_fees) > 0).slice(0, 10).map((c) => {
+                  const totalFees = Number(c.total_fees) || 0;
+                  const commission = Math.round(totalFees * 0.05);
+                  const netAmount = totalFees - commission;
+                  return (
+                    <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', background: '#FAFBFE', borderRadius: 12, border: '1px solid var(--border)' }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.case_number} - {c.client_name || 'بدون اسم'}</p>
+                        <div style={{ display: 'flex', gap: 12, marginTop: 4 }}>
+                          <span style={{ fontSize: 11, color: 'var(--muted)' }}>الأتعاب: <strong style={{ color: 'var(--navy)' }}>{totalFees.toLocaleString()} ج</strong></span>
+                          <span style={{ fontSize: 11, color: 'var(--danger)' }}>العمولة: <strong>{commission.toLocaleString()} ج</strong></span>
+                          <span style={{ fontSize: 11, color: 'var(--success)' }}>الصافي: <strong>{netAmount.toLocaleString()} ج</strong></span>
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="gold"
+                        onClick={async () => {
+                          const { error } = await supabase.rpc('increment_commission_debt', { amount: commission, lawyer_id: user.id });
+                          if (!error) {
+                            const currentDebt = (profile as any).commission_debt || 0;
+                            setProfile((p) => p ? { ...p, commission_debt: currentDebt + commission } : p);
+                            push(`✓ تم تأكيد استلام ${totalFees.toLocaleString()} ج (عمولة: ${commission.toLocaleString()} ج)`, 'success');
+                          } else {
+                            push('خطأ في تأكيد الدفعة', 'danger');
+                          }
+                        }}
+                      >
+                        تأكيد استلام المبلغ
+                      </Button>
+                    </div>
+                  );
+                })}
+                {cases.filter((c) => Number(c.total_fees) > 0).length === 0 && (
+                  <p style={{ textAlign: 'center', color: 'var(--muted)', padding: 20 }}>لا توجد قضايا بأتعاب مسجلة</p>
+                )}
+              </div>
+            </Card>
+          </div>
         )}
 
         {tab === 'settings' && (

@@ -18,7 +18,7 @@ interface ClientPortalProps {
 
 interface ChatMsg {
   id: string;
-  from: 'user' | 'bot' | 'lawyer' | 'staff';
+  from: 'user' | 'bot' | 'lawyer' | 'staff' | 'system';
   staffName?: string;
   text: string;
   time: string;
@@ -26,6 +26,8 @@ interface ChatMsg {
   isSystem?: boolean;
   attachment_url?: string;
   attachment_type?: 'image' | 'video';
+  sender_id?: string;
+  sender_role?: string;
 }
 
 interface AppointmentRequest {
@@ -36,6 +38,21 @@ interface AppointmentRequest {
   alternative_time?: string;
   reason?: string;
 }
+
+interface TeamMember {
+  id: string;
+  full_name: string;
+  role: string;
+  avatar_url?: string;
+}
+
+/* Firm roles for Team plan dropdown */
+const FIRM_ROLES: Record<string, { label: string; icon: string }> = {
+  lawyer: { label: 'المحامي الأساسي', icon: '👨‍⚖️' },
+  secretary: { label: 'السكرتارية', icon: '📋' },
+  accountant: { label: 'الحسابات', icon: '🧮' },
+  assistant: { label: 'المساعد', icon: '🤝' },
+};
 
 interface CaseInfo {
   id: string;
@@ -161,6 +178,9 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
     };
   } | null>(null);
 
+  /* Team members for Team plan */
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+
   /* Appointment status tracking */
   const [appointmentStatus, setAppointmentStatus] = useState<AppointmentRequest | null>(null);
   const [showAppointmentStatus, setShowAppointmentStatus] = useState(false);
@@ -244,6 +264,28 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
       }
     });
 
+    // Fetch team members if lawyer is on Team plan
+    supabase.from('profiles')
+      .select('id,full_name,role,avatar_url')
+      .eq('master_lawyer_id', lawyerId)
+      .in('role', ['lawyer', 'secretary', 'accountant', 'assistant'])
+      .then(({ data: teamData }) => {
+        if (teamData && teamData.length > 0) {
+          setTeamMembers(teamData);
+        }
+      });
+
+    // Also add main lawyer to team members
+    supabase.from('profiles')
+      .select('id,full_name,role,avatar_url')
+      .eq('id', lawyerId)
+      .single()
+      .then(({ data: mainLawyer }) => {
+        if (mainLawyer) {
+          setTeamMembers((prev) => [{ ...mainLawyer, role: 'lawyer' }, ...prev.filter((m) => m.id !== mainLawyer.id)]);
+        }
+      });
+
     /* Aggregate all cases for this client by phone number */
     if (profile?.phone_number) {
       supabase.from('cases')
@@ -259,29 +301,36 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
     }
   }, [urlLawyerId, profile?.linked_lawyer_id, profile?.phone_number]);
 
-  /* REAL-TIME MESSAGES SUBSCRIPTION - Human chat */
+  /* REAL-TIME MESSAGES SUBSCRIPTION - Human chat (separate from bot) */
   useEffect(() => {
-    if (!selectedCase || activeChatTarget === 'bot') return;
+    if (!selectedCase) return;
 
     const ch = supabase
       .channel('messages:' + selectedCase.id)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `case_id=eq.${selectedCase.id}` }, (payload) => {
         const msg = payload.new as any;
-        if (msg.sender_id !== user.id) {
+        // Detect system messages (emergency alerts)
+        const isSystemMessage = msg.message_text?.startsWith('【') || msg.sender_role === 'system';
+
+        if (msg.sender_id !== user.id || isSystemMessage) {
           setMsgs((prev) => [...prev, {
             id: msg.id,
-            from: msg.sender_role === 'lawyer' ? 'lawyer' : 'staff',
+            from: isSystemMessage ? 'system' : msg.sender_role === 'lawyer' ? 'lawyer' : msg.sender_role === 'staff' || msg.sender_role === 'secretary' || msg.sender_role === 'accountant' ? 'staff' : 'lawyer',
             text: msg.message_text,
             time: new Date(msg.created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
             attachment_url: msg.attachment_url,
             attachment_type: msg.attachment_type,
+            isSystem: isSystemMessage,
+            isEmergency: msg.message_text?.includes('طوارئ') || msg.message_text?.includes('🆘'),
+            sender_id: msg.sender_id,
+            sender_role: msg.sender_role,
           }]);
         }
       })
       .subscribe();
 
     return () => { ch.unsubscribe(); };
-  }, [selectedCase?.id, activeChatTarget, user.id]);
+  }, [selectedCase?.id, user.id]);
 
   /* REAL-TIME APPOINTMENT STATUS SUBSCRIPTION */
   useEffect(() => {
@@ -406,8 +455,19 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
         essentialNeeds: emergencyMessage,
         emergencyCosts: 0,
       });
+
       if (success) {
         const lawyerId = urlLawyerId || profile?.linked_lawyer_id;
+
+        // SYSTEM-INFUSED EMERGENCY TRIGGER: Insert styled system message into messages table
+        const systemEmergencyText = `【حالة طوارئ عاجلة من الموكل】\n${sanitize(emgText)}`;
+        await supabase.from('messages').insert([{
+          case_id: selectedCase.id,
+          sender_id: user.id,
+          sender_role: 'client',
+          message_text: systemEmergencyText,
+        }]);
+
         if (lawyerId) sendPushToClient(lawyerId, '🆘 طلب طوارئ عاجل!', emgText);
         setMsgs((p) => [...p, {
           id: 'emg' + Date.now(),
@@ -435,6 +495,8 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
     const timeRange = `${timeFrom} - ${timeTo}`;
     const dayLabel = DAYS_OF_WEEK.find(d => d.id === selectedDay)?.label || selectedDay;
     const lawyerId = lawyerInfo?.id || urlLawyerId || profile?.linked_lawyer_id;
+    const clientName = profile?.full_name || selectedCase.client_name || 'موكل';
+    const caseNumber = selectedCase.case_number;
 
     const { error } = await supabase.from('appointment_requests').insert([{
       case_id: selectedCase.id,
@@ -442,7 +504,7 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
       lawyer_id: lawyerId,
       appointment_date: selectedDay,
       appointment_time: timeRange,
-      reason: `طلب موعد يوم ${dayLabel} من الساعة ${timeFrom} إلى ${timeTo}`,
+      reason: `طلب موعد من ${clientName} | قضية: ${caseNumber} | ${dayLabel} (${timeRange})`,
     }]);
 
     if (error) {
@@ -453,7 +515,7 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
     await supabase.from('case_events').insert([{
       case_id: selectedCase.id,
       event_type: 'APPOINTMENT_REQUESTED',
-      event_description: `📅 طلب حجز موعد: يوم ${dayLabel} (${timeRange})`,
+      event_description: `📅 طلب حجز موعد: ${clientName} (${caseNumber}) - ${dayLabel} (${timeRange})`,
     }]);
 
     push('✓ تم إرسال طلب الموعد', 'success');
@@ -549,23 +611,34 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
 
         <div style={{ flex: 1, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 10, background: '#FAFBFE' }}>
           {msgs.map((msg) => {
-            const isEmergency = msg.isEmergency || msg.text.startsWith('🆘') || msg.text.includes('【طلب طوارئ');
-            const isSystem = msg.isSystem || msg.text.startsWith('【');
+            const isEmergency = msg.isEmergency || msg.text.startsWith('🆘') || msg.text.includes('【حالة طوارئ');
+            const isSystem = msg.isSystem || msg.from === 'system' || msg.text.startsWith('【');
             const chatClass = msg.from === 'user' ? (isEmergency ? 'chat-emergency' : 'chat-me') : (isSystem ? 'chat-system' : (isEmergency ? 'chat-emergency' : 'chat-other'));
             return (
               <div key={msg.id} className="fade-up" style={{ display: 'flex', justifyContent: msg.from === 'user' ? 'flex-end' : 'flex-start', alignItems: 'flex-end', gap: 7 }}>
                 {msg.from !== 'user' && (
-                  <div style={{ width: 32, height: 32, background: isEmergency ? '#C41E3A' : msg.from === 'staff' ? 'var(--gold)' : 'var(--navy)', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, flexShrink: 0, color: '#fff', boxShadow: isEmergency ? '0 0 12px rgba(196,30,58,.4)' : 'none' }}>
-                    {isEmergency ? '🆘' : msg.from === 'bot' ? '🤖' : msg.from === 'staff' ? '📋' : '👨‍⚖️'}
+                  <div style={{
+                    width: 32, height: 32,
+                    background: isSystem && isEmergency ? '#C41E3A' : isSystem ? 'var(--navy)' : msg.from === 'staff' ? 'var(--gold)' : 'var(--navy)',
+                    borderRadius: 10,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 14, flexShrink: 0, color: '#fff',
+                    boxShadow: isEmergency ? '0 0 12px rgba(196,30,58,.4)' : 'none',
+                  }}>
+                    {isSystem && isEmergency ? '🆘' : isSystem ? '⚠️' : msg.from === 'bot' ? '🤖' : msg.from === 'staff' ? '📋' : '👨‍⚖️'}
                   </div>
                 )}
-                <div className={chatClass} style={{ maxWidth: '80%', padding: '12px 16px', fontSize: 14, lineHeight: 1.8, whiteSpace: 'pre-line', direction: 'rtl' }}>
+                <div className={chatClass} style={{
+                  maxWidth: '85%', padding: '12px 16px', fontSize: 14, lineHeight: 1.8,
+                  whiteSpace: 'pre-line', direction: 'rtl',
+                  background: isSystem && isEmergency ? 'linear-gradient(135deg, #C41E3A, #8B0000)' : undefined,
+                }}>
                   {msg.staffName && msg.from === 'staff' && <p style={{ fontSize: 10, fontWeight: 800, color: isEmergency || isSystem ? '#fff' : 'var(--gold)', marginBottom: 4 }}>{msg.staffName}</p>}
-                  {/* Render attachments for human chat */}
-                  {msg.attachment_url && msg.attachment_type === 'image' && (
+                  {/* Render attachments for human chat only */}
+                  {msg.attachment_url && msg.attachment_type === 'image' && activeChatTarget !== 'bot' && (
                     <img src={msg.attachment_url} alt="" style={{ maxWidth: '100%', borderRadius: 8, marginBottom: msg.text ? 8 : 0 }} />
                   )}
-                  {msg.attachment_url && msg.attachment_type === 'video' && (
+                  {msg.attachment_url && msg.attachment_type === 'video' && activeChatTarget !== 'bot' && (
                     <video src={msg.attachment_url} controls style={{ maxWidth: '100%', borderRadius: 8, marginBottom: msg.text ? 8 : 0 }} />
                   )}
                   {msg.text}
@@ -643,12 +716,26 @@ export function ClientPortal({ user, profile, onLogout, urlLawyerId }: ClientPor
                       <div style={{ flex: 1 }}><p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>المساعد الذكي</p><p style={{ fontSize: 10, color: 'var(--muted)' }}>يعمل محلياً بدون انترنت</p></div>
                     </button>
 
-                    {/* Team tier - Show all firm members */}
-                    {lawyerTier === 'team' && TEAM_MEMBERS.map((member) => (
-                      <button key={member.id} onClick={() => selectTeamMember(member)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', border: 'none', background: 'transparent', cursor: 'pointer', width: '100%', textAlign: 'right', transition: 'background .15s', fontFamily: "'Cairo',sans-serif" }}>
-                        <span style={{ fontSize: 18 }}>{member.icon}</span><span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{member.label}</span>
-                      </button>
-                    ))}
+                    {/* Team tier - Show dynamic firm members from database */}
+                    {lawyerTier === 'team' && teamMembers.length > 0 && teamMembers.map((member) => {
+                      const roleInfo = FIRM_ROLES[member.role] || FIRM_ROLES.lawyer;
+                      return (
+                        <button key={member.id} onClick={() => {
+                          setActiveChatTarget('staff');
+                          setActiveChatLabel(member.full_name);
+                          setShowChatDropdown(false);
+                          setCurrentScreen('live_chat');
+                        }} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', border: 'none', background: 'transparent', cursor: 'pointer', width: '100%', textAlign: 'right', transition: 'background .15s', fontFamily: "'Cairo',sans-serif" }}>
+                          <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                            {member.avatar_url ? <img src={member.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 14 }}>{roleInfo.icon}</span>}
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{member.full_name}</p>
+                            <p style={{ fontSize: 10, color: 'var(--muted)' }}>{roleInfo.label}</p>
+                          </div>
+                        </button>
+                      );
+                    })}
 
                     {/* Free/Premium tiers - Direct lawyer chat */}
                     {lawyerTier !== 'team' && (
